@@ -90,6 +90,7 @@
   tbody tr:nth-child(even) { background: #FAF9FF; }
   tbody tr:hover { background: var(--orange-light); }
   td input { width: 80px; text-align: right; }
+  td input.city-input { width: 100%; min-width: 110px; text-align: left; }
   tr.tier-row td.tiernum, tr.range-row td.rangenum { color: var(--orange-dark); font-weight: 800; }
   .cols2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
   button {
@@ -158,11 +159,41 @@
   .switch-btn:hover { background: #fff; color: var(--ink); transform: none; }
   .switch-btn.active { background: var(--orange); color: #fff; box-shadow: 0 3px 10px rgba(255, 106, 0, 0.28); }
   .switch-btn.active:hover { background: var(--orange-dark); }
+
+  .top-bar-row { display: flex; align-items: center; gap: 14px; margin-bottom: 22px; }
+  .city-gear-btn {
+    background: #fff; color: var(--ink-soft); border: 1.5px solid var(--line);
+    box-shadow: var(--shadow); white-space: nowrap; margin: 0;
+  }
+  .city-gear-btn:hover { background: var(--orange-light); color: var(--orange-dark); border-color: var(--orange); }
+
+  .modal-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(27, 30, 43, 0.55);
+    align-items: center; justify-content: center; padding: 24px; z-index: 100;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal-box {
+    background: var(--card); border-radius: var(--radius-lg); box-shadow: var(--shadow);
+    padding: 22px 24px 24px; width: 100%; max-width: 640px; max-height: 85vh; overflow-y: auto;
+  }
+  .modal-header {
+    display: flex; align-items: center; justify-content: space-between;
+    font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 16px;
+    margin-bottom: 12px;
+  }
+  .modal-close {
+    background: transparent; color: var(--ink-soft); box-shadow: none; margin: 0;
+    padding: 2px 10px; font-size: 20px; line-height: 1; border-radius: 999px;
+  }
+  .modal-close:hover { background: var(--danger-bg); color: var(--danger); transform: none; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1 class="title">Calculadora de Forecast DxGy - DiDi</h1>
+  <div class="top-bar-row">
+    <h1 class="title" style="flex:1; margin-bottom:0;">Calculadora de Forecast DxGy - DiDi</h1>
+    <button type="button" id="openCityModalBtn" class="secondary city-gear-btn">⚙ Ciudades</button>
+  </div>
 
   <div class="panel">
     <div class="black-bar">1. CARGA DE ARCHIVOS</div>
@@ -324,16 +355,119 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="cityModalOverlay">
+  <div class="modal-box">
+    <div class="modal-header">
+      <span>Ciudades configuradas</span>
+      <button type="button" id="closeCityModalBtn" class="modal-close">&times;</button>
+    </div>
+    <div class="meta-line">Cada ciudad recuerda su corrección de hora y moneda para que se autocompleten al detectarla en los archivos de trips. Queda guardado permanentemente en este navegador.</div>
+    <div class="add-remove">
+      <button id="addCityBtn" class="secondary">+ Ciudad</button>
+      <button id="removeCityBtn" class="secondary">- Ciudad</button>
+    </div>
+    <table id="cityTable">
+      <thead><tr><th>City ID</th><th>Nombre</th><th>Moneda</th><th>Corrección de hora</th></tr></thead>
+      <tbody id="cityTbody"></tbody>
+    </table>
+  </div>
+</div>
+
 <script>
 let TRIPS_ROWS = [];      // parsed & normalized rows from trips file(s)
 let COHORT_ROWS = [];     // parsed & normalized rows from cohort file
 let DETECTED_CITY = null;
 let pyodide = null;
 
-const CITY_INFO = {
+// ---------- City registry (persisted in this browser, editable via the "Ciudades configuradas" table) ----------
+const CITY_INFO_STORAGE_KEY = 'dxgy_calc_city_info_v1';
+const DEFAULT_CITY_INFO = {
   '56513800': { name: 'Valparaiso', currency: 'CLP', hour_offset: -12 },
   '51541300': { name: 'Lima', currency: 'S/', hour_offset: -13 },
 };
+
+function loadCityInfo() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(CITY_INFO_STORAGE_KEY));
+    if (saved && typeof saved === 'object' && Object.keys(saved).length) return saved;
+  } catch (e) { /* ignore corrupt storage, fall back to defaults */ }
+  return { ...DEFAULT_CITY_INFO };
+}
+
+let CITY_INFO = loadCityInfo();
+
+function saveCityInfo() {
+  try { localStorage.setItem(CITY_INFO_STORAGE_KEY, JSON.stringify(CITY_INFO)); } catch (e) { /* storage unavailable, non-fatal */ }
+}
+
+function rebuildCityInfoFromTable() {
+  const next = {};
+  document.querySelectorAll('#cityTbody tr').forEach(tr => {
+    const id = tr.querySelector('.city-id').value.trim();
+    if (!id) return;
+    next[id] = {
+      name: tr.querySelector('.city-name').value.trim(),
+      currency: tr.querySelector('.city-currency').value.trim(),
+      hour_offset: parseInt(tr.querySelector('.city-offset').value) || 0,
+    };
+  });
+  CITY_INFO = next;
+  saveCityInfo();
+  // If the currently loaded trips' city was just (re)configured, refresh the auto-filled fields.
+  if (DETECTED_CITY && CITY_INFO[DETECTED_CITY]) applyCityInfoToForm(DETECTED_CITY);
+}
+
+function applyCityInfoToForm(cityId) {
+  const info = CITY_INFO[cityId];
+  document.getElementById('cityVal').textContent = cityId + (info && info.name ? ` (${info.name})` : ' (no configurada)');
+  document.getElementById('hourOffsetInput').value = info ? info.hour_offset : 0;
+  document.getElementById('currencyInput').value = info ? info.currency : '';
+}
+
+function addCityRow(id, name, currency, hourOffset) {
+  const tbody = document.getElementById('cityTbody');
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td><input type="text" class="city-id city-input" value="${id ?? ''}" placeholder="51541300"></td>
+    <td><input type="text" class="city-name city-input" value="${name ?? ''}" placeholder="Lima"></td>
+    <td><input type="text" class="city-currency city-input" value="${currency ?? ''}" placeholder="S/" style="width:70px;"></td>
+    <td><input type="number" class="city-offset" value="${hourOffset ?? 0}" step="1" style="width:70px;"></td>
+  `;
+  tbody.appendChild(tr);
+  tr.querySelectorAll('input').forEach(inp => inp.addEventListener('change', rebuildCityInfoFromTable));
+}
+
+function removeCityRow() {
+  const tbody = document.getElementById('cityTbody');
+  if (tbody.children.length > 1) {
+    tbody.removeChild(tbody.lastChild);
+    rebuildCityInfoFromTable();
+  }
+}
+
+function renderCityTable() {
+  const tbody = document.getElementById('cityTbody');
+  tbody.innerHTML = '';
+  const entries = Object.entries(CITY_INFO);
+  if (!entries.length) { addCityRow(); return; }
+  entries.forEach(([id, info]) => addCityRow(id, info.name, info.currency, info.hour_offset));
+}
+
+document.getElementById('addCityBtn').addEventListener('click', () => { addCityRow(); });
+document.getElementById('removeCityBtn').addEventListener('click', removeCityRow);
+renderCityTable();
+
+// ---------- City modal ----------
+function openCityModal() { document.getElementById('cityModalOverlay').classList.add('open'); }
+function closeCityModal() { document.getElementById('cityModalOverlay').classList.remove('open'); }
+document.getElementById('openCityModalBtn').addEventListener('click', openCityModal);
+document.getElementById('closeCityModalBtn').addEventListener('click', closeCityModal);
+document.getElementById('cityModalOverlay').addEventListener('click', (e) => {
+  if (e.target.id === 'cityModalOverlay') closeCityModal();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeCityModal();
+});
 
 // ---------- Pyodide setup ----------
 async function initPyodide() {
@@ -674,15 +808,18 @@ document.getElementById('tripsInput').addEventListener('change', async (e) => {
     const dmin = dates[0], dmax = dates[dates.length - 1];
     const uniqueDates = [...new Set(dates)].sort();
 
-    document.getElementById('cityVal').textContent = DETECTED_CITY + (CITY_INFO[DETECTED_CITY] ? ` (${CITY_INFO[DETECTED_CITY].name})` : '');
     document.getElementById('windowVal').textContent = `${dmin} a ${dmax}`;
     document.getElementById('snapshotRefInput').value = dmin;
     document.getElementById('snapshotRefInput').min = dmin;
     document.getElementById('snapshotRefInput').max = dmax;
 
-    const info = CITY_INFO[DETECTED_CITY];
-    document.getElementById('hourOffsetInput').value = info ? info.hour_offset : 0;
-    document.getElementById('currencyInput').value = info ? info.currency : '';
+    applyCityInfoToForm(DETECTED_CITY);
+    if (!CITY_INFO[DETECTED_CITY]) {
+      // Unknown city: seed a row in the city table with the detected ID and open the modal
+      // so Juan notices and fills in name/currency/offset once — remembered for every future run.
+      addCityRow(DETECTED_CITY);
+      openCityModal();
+    }
 
     buildDateCheckboxes(uniqueDates);
 
