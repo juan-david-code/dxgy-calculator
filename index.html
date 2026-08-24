@@ -222,6 +222,7 @@
       <div class="switch-group" id="incentiveTypeSwitch">
         <button type="button" class="switch-btn active" data-type="dxgy">DxGy</button>
         <button type="button" class="switch-btn" data-type="guarantee">Garantizado</button>
+        <button type="button" class="switch-btn" data-type="multiplier">Multiplier</button>
       </div>
     </div>
 
@@ -284,6 +285,9 @@
         <div class="row-inline" id="guaranteeNote" style="display:none;">
           <span class="muted">En modo Garantizado el payout siempre es: <b>max(monto del tier más alto alcanzado − ganancias reales, 0)</b>.</span>
         </div>
+        <div class="row-inline" id="multiplierNote" style="display:none;">
+          <span class="muted">En modo Multiplier cada tier cubre solo el tramo de viajes desde el tier anterior: si el driver alcanza el umbral del tier, se le multiplican por el % de ese tier los ingresos estimados de <b>ese tramo</b> (ingresos totales ÷ trips totales × trips del tramo), con tope en el CAP del tier. Los tiers alcanzados se suman. Como no tenemos el ingreso por viaje individual, se estima con el promedio del conductor en la ventana.</span>
+        </div>
         <div class="row-inline">
           <label>Incrementality factor</label>
           <input type="number" id="incrementalityInput" value="1" step="0.01" style="width:80px;">
@@ -312,6 +316,18 @@
       <table id="guaranteeTierTable">
         <thead><tr><th>#</th><th>Min. trips</th><th>Monto garantizado (total)</th></tr></thead>
         <tbody id="guaranteeTierTbody"></tbody>
+      </table>
+    </div>
+
+    <div id="multiplierTierWrap" style="display:none;">
+      <div class="section-label">Tiers Multiplier</div>
+      <div class="add-remove">
+        <button id="addMultiplierTierBtn" class="secondary">+ Tier</button>
+        <button id="removeMultiplierTierBtn" class="secondary">- Tier</button>
+      </div>
+      <table id="multiplierTierTable">
+        <thead><tr><th>#</th><th>Trips (acumulado)</th><th>% Multiplicador</th><th>Cap</th></tr></thead>
+        <tbody id="multiplierTierTbody"></tbody>
       </table>
     </div>
 
@@ -535,9 +551,8 @@ def run_dxgy_pipeline(trips_json, cohort_json, city, hour_offset, snapshot_ref_d
     else:
         per_drv['projected_trips'] = np.floor(per_drv['total_trips'] * float(incrementality_factor)).astype(int)
 
-        sorted_tiers = sorted(tiers, key=lambda t: t['min_trips'])
-
         if incentive_type == 'guarantee':
+            sorted_tiers = sorted(tiers, key=lambda t: t['min_trips'])
             # Guarantee: the highest tier reached sets a TOTAL guaranteed amount (tiers replace,
             # never sum); payout is the top-up needed to reach it, never negative.
             def guarantee_amount_for(n):
@@ -549,7 +564,33 @@ def run_dxgy_pipeline(trips_json, cohort_json, city, hour_offset, snapshot_ref_d
 
             per_drv['guarantee_amount'] = per_drv['projected_trips'].apply(guarantee_amount_for)
             per_drv['payout'] = (per_drv['guarantee_amount'] - per_drv['total_earnings']).clip(lower=0)
+
+        elif incentive_type == 'multiplier':
+            sorted_tiers = sorted(tiers, key=lambda t: t['trips'])
+            # Multiplier: each tier only covers the BAND of trips between the previous tier's
+            # threshold and its own (not cumulative from zero). Reaching the tier's threshold
+            # unlocks a % of that band's earnings, capped per tier; earnings-per-trip is
+            # estimated from the driver's own average since we don't have per-trip earnings.
+            def multiplier_payout_for(n, avg_earnings_per_trip):
+                total = 0.0
+                prev_trips = 0
+                for t in sorted_tiers:
+                    if n >= t['trips']:
+                        band_trips = t['trips'] - prev_trips
+                        band_earnings = avg_earnings_per_trip * band_trips
+                        total += min((t['pct'] / 100.0) * band_earnings, t['cap'])
+                    prev_trips = t['trips']
+                return total
+
+            avg_earnings = np.where(
+                per_drv['total_trips'] > 0, per_drv['total_earnings'] / per_drv['total_trips'], 0.0
+            )
+            per_drv['payout'] = [
+                multiplier_payout_for(n, avg_e) for n, avg_e in zip(per_drv['projected_trips'], avg_earnings)
+            ]
+
         else:
+            sorted_tiers = sorted(tiers, key=lambda t: t['min_trips'])
             def payout_for(n):
                 if payout_mode == 'cumulative':
                     return sum(t['reward'] for t in sorted_tiers if n >= t['min_trips'])
@@ -919,17 +960,38 @@ function removeGuaranteeTierRow() {
   if (tbody.children.length > 1) { tbody.removeChild(tbody.lastChild); guaranteeTierCount--; renumber('.tiernum', '#guaranteeTierTbody'); }
 }
 
+// ---------- Multiplier tier rows (separate table so switching type never loses either config) ----------
+let multiplierTierCount = 0;
+function addMultiplierTierRow(trips, pct, cap) {
+  multiplierTierCount++;
+  const tbody = document.getElementById('multiplierTierTbody');
+  const tr = document.createElement('tr');
+  tr.className = 'tier-row';
+  tr.innerHTML = `
+    <td class="tiernum">${multiplierTierCount}</td>
+    <td><input type="number" class="multiplier-tier-trips" value="${trips ?? 0}"></td>
+    <td><input type="number" class="multiplier-tier-pct" value="${pct ?? 0}" step="0.1"></td>
+    <td><input type="number" class="multiplier-tier-cap" value="${cap ?? 0}"></td>
+  `;
+  tbody.appendChild(tr);
+}
+function removeMultiplierTierRow() {
+  const tbody = document.getElementById('multiplierTierTbody');
+  if (tbody.children.length > 1) { tbody.removeChild(tbody.lastChild); multiplierTierCount--; renumber('.tiernum', '#multiplierTierTbody'); }
+}
+
 // ---------- Incentive type switch ----------
 let INCENTIVE_TYPE = 'dxgy';
 document.querySelectorAll('#incentiveTypeSwitch .switch-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     INCENTIVE_TYPE = btn.dataset.type;
     document.querySelectorAll('#incentiveTypeSwitch .switch-btn').forEach(b => b.classList.toggle('active', b === btn));
-    const isGuarantee = INCENTIVE_TYPE === 'guarantee';
-    document.getElementById('dxgyTierWrap').style.display = isGuarantee ? 'none' : '';
-    document.getElementById('guaranteeTierWrap').style.display = isGuarantee ? '' : 'none';
-    document.getElementById('payoutModeRow').style.display = isGuarantee ? 'none' : '';
-    document.getElementById('guaranteeNote').style.display = isGuarantee ? '' : 'none';
+    document.getElementById('dxgyTierWrap').style.display = INCENTIVE_TYPE === 'dxgy' ? '' : 'none';
+    document.getElementById('guaranteeTierWrap').style.display = INCENTIVE_TYPE === 'guarantee' ? '' : 'none';
+    document.getElementById('multiplierTierWrap').style.display = INCENTIVE_TYPE === 'multiplier' ? '' : 'none';
+    document.getElementById('payoutModeRow').style.display = INCENTIVE_TYPE === 'dxgy' ? '' : 'none';
+    document.getElementById('guaranteeNote').style.display = INCENTIVE_TYPE === 'guarantee' ? '' : 'none';
+    document.getElementById('multiplierNote').style.display = INCENTIVE_TYPE === 'multiplier' ? '' : 'none';
   });
 });
 
@@ -945,6 +1007,8 @@ document.getElementById('addTierBtn').addEventListener('click', () => addTierRow
 document.getElementById('removeTierBtn').addEventListener('click', removeTierRow);
 document.getElementById('addGuaranteeTierBtn').addEventListener('click', () => addGuaranteeTierRow());
 document.getElementById('removeGuaranteeTierBtn').addEventListener('click', removeGuaranteeTierRow);
+document.getElementById('addMultiplierTierBtn').addEventListener('click', () => addMultiplierTierRow());
+document.getElementById('removeMultiplierTierBtn').addEventListener('click', removeMultiplierTierRow);
 
 // Defaults matching the original DxGyIncentive example
 addRangeRow(0, 23);
@@ -958,6 +1022,10 @@ addGuaranteeTierRow(10, 28000);
 addGuaranteeTierRow(13, 39000);
 addGuaranteeTierRow(15, 48000);
 addGuaranteeTierRow(20, 80000);
+
+// Defaults matching Juan's Multiplier example (9 trips -> 20% cap 12; +4 trips -> 30% cap 12)
+addMultiplierTierRow(9, 20, 12);
+addMultiplierTierRow(13, 30, 12);
 
 // ---------- Calculation ----------
 document.getElementById('calcBtn').addEventListener('click', runCalculation);
@@ -978,16 +1046,24 @@ async function runCalculation() {
     parseInt(tr.querySelector('.range-start').value) || 0,
     parseInt(tr.querySelector('.range-end').value) || 0,
   ]);
-  const isGuarantee = INCENTIVE_TYPE === 'guarantee';
-  const tiers = isGuarantee
-    ? [...document.querySelectorAll('#guaranteeTierTbody tr')].map(tr => ({
-        min_trips: parseFloat(tr.querySelector('.guarantee-tier-min').value) || 0,
-        reward: parseFloat(tr.querySelector('.guarantee-tier-amount').value) || 0,
-      }))
-    : [...document.querySelectorAll('#tierTbody tr')].map(tr => ({
-        min_trips: parseFloat(tr.querySelector('.tier-min').value) || 0,
-        reward: parseFloat(tr.querySelector('.tier-reward').value) || 0,
-      }));
+  let tiers;
+  if (INCENTIVE_TYPE === 'guarantee') {
+    tiers = [...document.querySelectorAll('#guaranteeTierTbody tr')].map(tr => ({
+      min_trips: parseFloat(tr.querySelector('.guarantee-tier-min').value) || 0,
+      reward: parseFloat(tr.querySelector('.guarantee-tier-amount').value) || 0,
+    }));
+  } else if (INCENTIVE_TYPE === 'multiplier') {
+    tiers = [...document.querySelectorAll('#multiplierTierTbody tr')].map(tr => ({
+      trips: parseFloat(tr.querySelector('.multiplier-tier-trips').value) || 0,
+      pct: parseFloat(tr.querySelector('.multiplier-tier-pct').value) || 0,
+      cap: parseFloat(tr.querySelector('.multiplier-tier-cap').value) || 0,
+    }));
+  } else {
+    tiers = [...document.querySelectorAll('#tierTbody tr')].map(tr => ({
+      min_trips: parseFloat(tr.querySelector('.tier-min').value) || 0,
+      reward: parseFloat(tr.querySelector('.tier-reward').value) || 0,
+    }));
+  }
   const hourOffset = parseInt(document.getElementById('hourOffsetInput').value) || 0;
   const snapshotRef = document.getElementById('snapshotRefInput').value;
   const payoutMode = document.getElementById('payoutModeSelect').value;
