@@ -1,0 +1,973 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Calculadora de Forecast DxGy - DiDi</title>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --orange: #FF6A00;
+    --orange-dark: #E85800;
+    --orange-light: #FFF1E6;
+    --ink: #1B1E2B;
+    --ink-soft: #565B6E;
+    --line: #E7E5F0;
+    --card: #FFFFFF;
+    --bg: #F4F1FA;
+    --bg-grad: linear-gradient(160deg, #FFF3EA 0%, #F4F1FA 45%, #EFF3FF 100%);
+    --danger: #E1443A;
+    --danger-bg: #FDEBEA;
+    --gold: #FFB020;
+    --radius-lg: 22px;
+    --radius-md: 14px;
+    --radius-sm: 10px;
+    --shadow: 0 6px 20px rgba(31, 20, 60, 0.07), 0 1px 3px rgba(31, 20, 60, 0.05);
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: 'Manrope', 'Segoe UI', Arial, sans-serif;
+    background: var(--bg-grad);
+    background-attachment: fixed;
+    margin: 0;
+    padding: 32px 24px;
+    color: var(--ink);
+  }
+  .wrap { max-width: 1300px; margin: 0 auto; }
+  h1.title {
+    font-family: 'Space Grotesk', 'Manrope', sans-serif;
+    background: linear-gradient(120deg, var(--orange) 0%, #FF8A3D 100%);
+    color: #fff; text-align: center;
+    padding: 22px 24px; margin: 0 0 22px 0; font-size: 26px; font-weight: 700; letter-spacing: .2px;
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow);
+  }
+  .panel {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    padding: 22px 24px 24px;
+    margin-bottom: 20px;
+    box-shadow: var(--shadow);
+  }
+  .black-bar {
+    font-family: 'Space Grotesk', sans-serif;
+    background: var(--ink); color: #fff;
+    padding: 10px 18px; font-weight: 600; font-size: 13px; letter-spacing: .4px;
+    margin: -22px -24px 18px -24px;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  }
+  .row-inline { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+  .row-inline label { font-weight: 700; font-size: 12.5px; min-width: 130px; color: var(--ink-soft); }
+  select, input[type=number], input[type=text], input[type=date] {
+    padding: 7px 11px; font-size: 13px; font-family: inherit;
+    border: 1.5px solid var(--line); border-radius: var(--radius-sm);
+    background: #fff; color: var(--ink);
+    transition: border-color .15s, box-shadow .15s;
+  }
+  select:focus, input:focus {
+    outline: none; border-color: var(--orange);
+    box-shadow: 0 0 0 3px var(--orange-light);
+  }
+  input[type=file] {
+    font-size: 12px; font-family: inherit;
+    border: 1.5px dashed var(--line); border-radius: var(--radius-sm);
+    padding: 6px 10px; background: #FBFAFF;
+  }
+  input[type=checkbox] { accent-color: var(--orange); width: 15px; height: 15px; cursor: pointer; }
+  table { border-collapse: separate; border-spacing: 0; width: 100%; background: #fff; border-radius: var(--radius-sm); overflow: hidden; border: 1px solid var(--line); }
+  th, td { border-bottom: 1px solid var(--line); padding: 9px 10px; font-size: 13px; text-align: center; }
+  td { border-right: 1px solid var(--line); }
+  td:last-child { border-right: none; }
+  tr:last-child td { border-bottom: none; }
+  th {
+    background: var(--ink); color: #fff; font-weight: 600; font-size: 11.5px;
+    text-transform: uppercase; letter-spacing: .4px; border-bottom: none;
+  }
+  tbody tr:nth-child(even) { background: #FAF9FF; }
+  tbody tr:hover { background: var(--orange-light); }
+  td input { width: 80px; text-align: right; }
+  tr.tier-row td.tiernum, tr.range-row td.rangenum { color: var(--orange-dark); font-weight: 800; }
+  .cols2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  button {
+    font-family: inherit;
+    background: var(--orange); color: #fff; border: none; padding: 9px 20px;
+    font-size: 13px; font-weight: 700; cursor: pointer; margin-right: 8px;
+    border-radius: 999px; transition: transform .1s, background .15s, box-shadow .15s;
+    box-shadow: 0 3px 10px rgba(255, 106, 0, 0.28);
+  }
+  button:hover { background: var(--orange-dark); transform: translateY(-1px); }
+  button:active { transform: translateY(0); }
+  button.secondary {
+    background: #fff; color: var(--ink-soft); border: 1.5px solid var(--line);
+    box-shadow: none;
+  }
+  button.secondary:hover { background: var(--orange-light); color: var(--orange-dark); border-color: var(--orange); }
+  button:disabled { background: #D8D6E3; color: #fff; cursor: not-allowed; box-shadow: none; transform: none; }
+  #calcBtn { font-size: 14.5px; padding: 12px 28px; }
+  #fileStatus, #calcStatus, #pyodideStatus { font-size: 12.5px; color: var(--ink-soft); margin-top: 8px; }
+  .loading { color: var(--orange-dark); font-weight: 700; }
+  .error { color: var(--danger); font-weight: 700; background: var(--danger-bg); padding: 6px 12px; border-radius: var(--radius-sm); display: inline-block; }
+  .add-remove { margin-bottom: 10px; }
+  .top-controls { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; }
+  .control-box {
+    background: #FBFAFF; border: 1px solid var(--line); border-radius: var(--radius-md);
+    padding: 10px 16px;
+  }
+  .control-box .lbl { font-size: 10.5px; color: var(--ink-soft); text-transform: uppercase; font-weight: 700; letter-spacing: .5px; }
+  .control-box .val { font-family: 'Space Grotesk', sans-serif; font-size: 17px; font-weight: 700; color: var(--ink); }
+  .report-row-selected { background: var(--orange-light) !important; }
+  .subtotal-bar {
+    background: linear-gradient(120deg, var(--ink) 0%, #333852 100%);
+    color: #fff; padding: 14px 20px; font-size: 15px; font-weight: 700;
+    display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;
+    border-radius: var(--radius-md);
+  }
+  .subtotal-bar span.amt { color: var(--gold); font-family: 'Space Grotesk', sans-serif; font-size: 19px; }
+  .meta-line { font-size: 12.5px; color: var(--ink-soft); margin-bottom: 10px; }
+  .checkbox-cell { text-align: center; }
+  .muted { color: #9A97AC; }
+  #dateFilterBox {
+    background: #FBFAFF; border-radius: var(--radius-md) !important; border-color: var(--line) !important;
+  }
+  #dateFilterBox label {
+    background: #fff; border: 1px solid var(--line); border-radius: 999px;
+    padding: 4px 10px 4px 8px !important;
+  }
+  .section-label {
+    font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 14px;
+    color: var(--ink); display: flex; align-items: center; gap: 8px;
+    margin: 4px 0 10px 0;
+  }
+  .section-label::before {
+    content: ''; width: 6px; height: 18px; background: var(--orange);
+    border-radius: 4px; display: inline-block;
+  }
+  .switch-group {
+    display: inline-flex; background: #F4F1FA; border: 1px solid var(--line);
+    border-radius: 999px; padding: 3px; gap: 2px;
+  }
+  .switch-btn {
+    background: transparent; color: var(--ink-soft); box-shadow: none;
+    padding: 7px 20px; border-radius: 999px; font-size: 12.5px; margin: 0;
+    transform: none;
+  }
+  .switch-btn:hover { background: #fff; color: var(--ink); transform: none; }
+  .switch-btn.active { background: var(--orange); color: #fff; box-shadow: 0 3px 10px rgba(255, 106, 0, 0.28); }
+  .switch-btn.active:hover { background: var(--orange-dark); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 class="title">Calculadora de Forecast DxGy - DiDi</h1>
+
+  <div class="panel">
+    <div class="black-bar">1. CARGA DE ARCHIVOS</div>
+    <div class="cols2">
+      <div>
+        <div class="row-inline"><label>Trips por hora</label>
+          <input type="file" id="tripsInput" accept=".xlsx,.xls,.csv" multiple>
+        </div>
+        <div id="tripsStatus" class="meta-line">Sube uno o varios archivos: date, hour, drv_id, city, trips, earnings</div>
+      </div>
+      <div>
+        <div class="row-inline"><label>Cohort snapshot</label>
+          <input type="file" id="cohortInput" accept=".xlsx,.xls,.csv">
+        </div>
+        <div id="cohortStatus" class="meta-line">Sube un archivo: snapshot_date, drv_id, city, cohort</div>
+      </div>
+    </div>
+    <div id="pyodideStatus" class="loading">Cargando motor Python (Pyodide)...</div>
+  </div>
+
+  <div class="panel">
+    <div class="black-bar">2. CONFIGURACIÓN</div>
+
+    <div class="row-inline" style="margin-bottom:16px;">
+      <label>Tipo de incentivo</label>
+      <div class="switch-group" id="incentiveTypeSwitch">
+        <button type="button" class="switch-btn active" data-type="dxgy">DxGy</button>
+        <button type="button" class="switch-btn" data-type="guarantee">Garantizado</button>
+      </div>
+    </div>
+
+    <div class="top-controls">
+      <div class="control-box">
+        <div class="lbl">Ciudad detectada</div>
+        <div class="val" id="cityVal">-</div>
+      </div>
+      <div class="control-box">
+        <div class="lbl">Ventana de fechas (trips)</div>
+        <div class="val" id="windowVal">-</div>
+      </div>
+      <div class="control-box">
+        <div class="row-inline" style="margin:0;"><label>Corrección de hora</label>
+          <input type="number" id="hourOffsetInput" value="0" step="1" style="width:70px;">
+        </div>
+      </div>
+      <div class="control-box">
+        <div class="row-inline" style="margin:0;"><label>Moneda</label>
+          <input type="text" id="currencyInput" value="" style="width:70px;">
+        </div>
+      </div>
+      <div class="control-box">
+        <div class="row-inline" style="margin:0;"><label>Snapshot cohort (ref.)</label>
+          <input type="date" id="snapshotRefInput" style="width:130px;">
+        </div>
+      </div>
+    </div>
+
+    <div class="section-label">Fechas incluidas</div>
+    <div class="row-inline" style="margin-bottom:6px;">
+      <button id="selectAllDatesBtn" class="secondary">Seleccionar todas</button>
+      <button id="clearAllDatesBtn" class="secondary">Limpiar</button>
+      <span class="muted" id="dateFilterSummary">Sube los trips para ver las fechas disponibles.</span>
+    </div>
+    <div id="dateFilterBox" style="display:flex; flex-wrap:wrap; gap:4px 14px; border:1px solid #ccc; padding:8px 10px; margin-bottom:14px; max-height:120px; overflow-y:auto;">
+      <span class="muted">-</span>
+    </div>
+
+    <div class="cols2">
+      <div>
+        <div class="section-label">Franjas horarias</div>
+        <div class="add-remove">
+          <button id="addRangeBtn" class="secondary">+ Franja</button>
+          <button id="removeRangeBtn" class="secondary">- Franja</button>
+        </div>
+        <table id="rangeTable">
+          <thead><tr><th>#</th><th>Hora inicio</th><th>Hora fin</th></tr></thead>
+          <tbody id="rangeTbody"></tbody>
+        </table>
+      </div>
+      <div>
+        <div class="row-inline" id="payoutModeRow">
+          <label>Payout mode</label>
+          <select id="payoutModeSelect">
+            <option value="cumulative">cumulative (suma tiers)</option>
+            <option value="highest_tier">highest_tier (solo el más alto)</option>
+          </select>
+        </div>
+        <div class="row-inline" id="guaranteeNote" style="display:none;">
+          <span class="muted">En modo Garantizado el payout siempre es: <b>max(monto del tier más alto alcanzado − ganancias reales, 0)</b>.</span>
+        </div>
+        <div class="row-inline">
+          <label>Incrementality factor</label>
+          <input type="number" id="incrementalityInput" value="1" step="0.01" style="width:80px;">
+        </div>
+      </div>
+    </div>
+
+    <div id="dxgyTierWrap">
+      <div class="section-label">Tiers DxGy</div>
+      <div class="add-remove">
+        <button id="addTierBtn" class="secondary">+ Tier</button>
+        <button id="removeTierBtn" class="secondary">- Tier</button>
+      </div>
+      <table id="tierTable">
+        <thead><tr><th>#</th><th>Min. trips</th><th>Reward</th></tr></thead>
+        <tbody id="tierTbody"></tbody>
+      </table>
+    </div>
+
+    <div id="guaranteeTierWrap" style="display:none;">
+      <div class="section-label">Tiers Garantizado</div>
+      <div class="add-remove">
+        <button id="addGuaranteeTierBtn" class="secondary">+ Tier</button>
+        <button id="removeGuaranteeTierBtn" class="secondary">- Tier</button>
+      </div>
+      <table id="guaranteeTierTable">
+        <thead><tr><th>#</th><th>Min. trips</th><th>Monto garantizado (total)</th></tr></thead>
+        <tbody id="guaranteeTierTbody"></tbody>
+      </table>
+    </div>
+
+    <div style="margin-top:14px;">
+      <button id="calcBtn" disabled>Calcular Forecast</button>
+    </div>
+    <div id="calcStatus"></div>
+  </div>
+
+  <div class="panel" id="resultsPanel" style="display:none;">
+    <div class="black-bar">3. REPORTE DE COSTO POR COHORT</div>
+    <div id="metaLine" class="meta-line"></div>
+
+    <div class="subtotal-bar">
+      <span>Burn seleccionado (<span id="selCount">0</span> cohorts):</span>
+      <span class="amt" id="selSubtotal">0</span>
+    </div>
+    <div class="row-inline">
+      <button id="selectAllBtn" class="secondary">Seleccionar todos</button>
+      <button id="clearAllBtn" class="secondary">Limpiar selección</button>
+      <span class="muted" style="margin-left:8px;">Burn total (todos los cohorts): <b id="grandTotal">0</b></span>
+    </div>
+
+    <table style="margin-top:10px;">
+      <thead>
+        <tr>
+          <th></th><th>Cohort</th><th># drv en cohort</th><th># drv activos</th><th>% activos</th>
+          <th># drv que ganan</th><th>% que ganan</th><th>Costo total</th><th>Costo prom. / ganador</th>
+        </tr>
+      </thead>
+      <tbody id="reportTbody"></tbody>
+    </table>
+  </div>
+
+  <div class="panel" id="topDriversPanel" style="display:none;">
+    <div class="black-bar">TOP DRIVERS POR TRIPS (referencia)</div>
+    <table>
+      <thead><tr><th>drv_id</th><th>cohort</th><th>total_trips</th><th>total_earnings</th><th>projected_trips</th><th>payout</th></tr></thead>
+      <tbody id="topDriversTbody"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+let TRIPS_ROWS = [];      // parsed & normalized rows from trips file(s)
+let COHORT_ROWS = [];     // parsed & normalized rows from cohort file
+let DETECTED_CITY = null;
+let pyodide = null;
+
+const CITY_INFO = {
+  '56513800': { name: 'Valparaiso', currency: 'CLP', hour_offset: -12 },
+  '51541300': { name: 'Lima', currency: 'S/', hour_offset: -13 },
+};
+
+// ---------- Pyodide setup ----------
+async function initPyodide() {
+  pyodide = await loadPyodide();
+  await pyodide.loadPackage("pandas");
+  await pyodide.runPythonAsync(`
+import pandas as pd
+import numpy as np
+import json
+
+def run_dxgy_pipeline(trips_json, cohort_json, city, hour_offset, snapshot_ref_date,
+                       hour_ranges_json, tiers_json, payout_mode, incrementality_factor,
+                       selected_dates_json, incentive_type='dxgy'):
+    trips_raw = pd.DataFrame(json.loads(trips_json))
+    cohort_raw = pd.DataFrame(json.loads(cohort_json))
+    hour_ranges = json.loads(hour_ranges_json)
+    tiers = json.loads(tiers_json)
+    selected_dates = set(json.loads(selected_dates_json))
+
+    if trips_raw.empty:
+        return json.dumps({"error": "No hay filas de trips cargadas."})
+
+    trips_raw['hour'] = ((trips_raw['hour'].astype(int) + int(hour_offset)) % 24 + 24) % 24
+    trips_raw['date'] = trips_raw['date'].astype(str)
+
+    if selected_dates:
+        trips_raw = trips_raw[trips_raw['date'].isin(selected_dates)]
+    if trips_raw.empty:
+        return json.dumps({"error": "No quedan filas de trips después de filtrar por las fechas seleccionadas."})
+
+    trips = (
+        trips_raw.groupby(['date', 'hour', 'drv_id'], as_index=False)
+        .agg(trips=('trips', 'sum'), earnings=('earnings', 'sum'))
+    )
+
+    cohort_city = cohort_raw[cohort_raw['city'].astype(str) == str(city)].copy()
+    if cohort_city.empty:
+        return json.dumps({"error": f"No hay filas de cohort para la ciudad '{city}'."})
+
+    cohort_city['snapshot_date'] = cohort_city['snapshot_date'].astype(str)
+    target_date = pd.Timestamp(snapshot_ref_date)
+    unique_dates = pd.to_datetime(sorted(cohort_city['snapshot_date'].unique()))
+    snap_date = unique_dates[np.argmin(np.abs(unique_dates - target_date))]
+    snap_date_str = str(snap_date.date())
+
+    cohort_snapshot = cohort_city[cohort_city['snapshot_date'] == snap_date_str][['drv_id', 'cohort']].copy()
+    dup_count = int(cohort_snapshot['drv_id'].duplicated().sum())
+
+    trips_cohort = trips.merge(cohort_snapshot, on='drv_id', how='inner')
+
+    scoped = trips_cohort if not hour_ranges else trips_cohort[pd.Series(False, index=trips_cohort.index)]
+    if hour_ranges:
+        mask = pd.Series(False, index=trips_cohort.index)
+        for r in hour_ranges:
+            mask |= (trips_cohort['hour'] >= int(r[0])) & (trips_cohort['hour'] <= int(r[1]))
+        scoped = trips_cohort[mask]
+
+    per_drv = scoped.groupby(['drv_id', 'cohort'], as_index=False).agg(
+        total_trips=('trips', 'sum'), total_earnings=('earnings', 'sum')
+    )
+
+    if per_drv.empty:
+        report = pd.DataFrame(columns=['cohort', 'n_drv_active', 'n_drv_earned', 'total_cost', 'avg_cost_per_earner'])
+        top_drivers = per_drv
+    else:
+        per_drv['projected_trips'] = np.floor(per_drv['total_trips'] * float(incrementality_factor)).astype(int)
+
+        sorted_tiers = sorted(tiers, key=lambda t: t['min_trips'])
+
+        if incentive_type == 'guarantee':
+            # Guarantee: the highest tier reached sets a TOTAL guaranteed amount (tiers replace,
+            # never sum); payout is the top-up needed to reach it, never negative.
+            def guarantee_amount_for(n):
+                amount = 0.0
+                for t in sorted_tiers:
+                    if n >= t['min_trips']:
+                        amount = t['reward']
+                return amount
+
+            per_drv['guarantee_amount'] = per_drv['projected_trips'].apply(guarantee_amount_for)
+            per_drv['payout'] = (per_drv['guarantee_amount'] - per_drv['total_earnings']).clip(lower=0)
+        else:
+            def payout_for(n):
+                if payout_mode == 'cumulative':
+                    return sum(t['reward'] for t in sorted_tiers if n >= t['min_trips'])
+                payout = 0.0
+                for t in sorted_tiers:
+                    if n >= t['min_trips']:
+                        payout = t['reward']
+                return payout
+
+            per_drv['payout'] = per_drv['projected_trips'].apply(payout_for)
+
+        per_drv['earned_reward'] = per_drv['payout'] > 0
+
+        report = per_drv.groupby('cohort', as_index=False).agg(
+            n_drv_active=('drv_id', 'nunique'),
+            n_drv_earned=('earned_reward', 'sum'),
+            total_cost=('payout', 'sum'),
+        )
+        report['avg_cost_per_earner'] = report['total_cost'] / report['n_drv_earned'].replace(0, np.nan)
+        top_drivers = per_drv.sort_values('total_trips', ascending=False).head(15)
+
+    cohort_sizes = cohort_snapshot['cohort'].value_counts().rename('n_drv_in_cohort')
+    report = report.merge(cohort_sizes, left_on='cohort', right_index=True, how='right').fillna(0)
+    report['n_drv_active'] = report['n_drv_active'].astype(int)
+    report['n_drv_earned'] = report['n_drv_earned'].astype(int)
+    report['pct_active'] = report['n_drv_active'] / report['n_drv_in_cohort']
+    report['pct_earned'] = report['n_drv_earned'] / report['n_drv_in_cohort']
+    report = report.sort_values('total_cost', ascending=False)
+
+    meta = {
+        'rows_trips': int(len(trips_raw)),
+        'n_drv_cohort_total': int(cohort_snapshot['drv_id'].nunique()),
+        'n_drv_with_trips_in_scope': int(per_drv['drv_id'].nunique()) if not per_drv.empty else 0,
+        'snapshot_used': snap_date_str,
+        'dup_cohort_drv': dup_count,
+    }
+
+    return json.dumps({
+        'report': json.loads(report.to_json(orient='records')),
+        'top_drivers': json.loads(top_drivers.to_json(orient='records')),
+        'meta': meta
+    })
+`);
+}
+
+initPyodide().then(() => {
+  document.getElementById('pyodideStatus').textContent = 'Motor Python listo.';
+  document.getElementById('pyodideStatus').classList.remove('loading');
+  refreshCalcButton();
+}).catch(err => {
+  document.getElementById('pyodideStatus').textContent = 'Error cargando Pyodide: ' + err;
+});
+
+// ---------- Helpers ----------
+function pad2(n) { return String(n).padStart(2, '0'); }
+
+function ymdIfPlausible(n) {
+  // Data-pipeline exports (e.g. BigQuery) often write dates as a plain YYYYMMDD integer
+  // instead of an Excel date serial — that value is far outside SSF's valid serial range,
+  // so parse_date_code() returns null for it. Recognize it directly.
+  if (!Number.isInteger(n) || n < 19000101 || n > 21001231) return null;
+  const y = Math.floor(n / 10000), m = Math.floor((n % 10000) / 100), d = n % 100;
+  if (m < 1 || m > 12 || d < 1 || d > 31) return null;
+  return `${y}-${pad2(m)}-${pad2(d)}`;
+}
+
+function toISODate(val) {
+  if (val instanceof Date) {
+    return `${val.getUTCFullYear()}-${pad2(val.getUTCMonth() + 1)}-${pad2(val.getUTCDate())}`;
+  }
+  if (typeof val === 'number' && isFinite(val)) {
+    const ymd = ymdIfPlausible(val);
+    if (ymd) return ymd;
+    const d = XLSX.SSF.parse_date_code(val);
+    if (d && d.y) return `${d.y}-${pad2(d.m)}-${pad2(d.d)}`;
+  }
+  const s = String(val ?? '').trim();
+  const m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return `${m[1]}-${pad2(m[2])}-${pad2(m[3])}`;
+  const m8 = s.match(/^(\d{8})$/);
+  if (m8) {
+    const ymd = ymdIfPlausible(parseInt(m8[1], 10));
+    if (ymd) return ymd;
+  }
+  const d2 = new Date(s);
+  if (!isNaN(d2)) return `${d2.getUTCFullYear()}-${pad2(d2.getUTCMonth() + 1)}-${pad2(d2.getUTCDate())}`;
+  return s;
+}
+
+// Some exporters write a wrong/truncated <dimension> tag in the sheet XML (e.g. declaring
+// only column A). SheetJS trusts that tag for '!ref' and silently drops every other column
+// from sheet_to_json, even though the actual cells are present in the parsed sheet object.
+// Recompute '!ref' from the real cell addresses so nothing gets truncated.
+function fixSheetRange(sheet) {
+  let minRow = Infinity, minCol = Infinity, maxRow = -Infinity, maxCol = -Infinity;
+  for (const addr in sheet) {
+    if (addr[0] === '!') continue;
+    const cell = XLSX.utils.decode_cell(addr);
+    if (cell.r < minRow) minRow = cell.r;
+    if (cell.r > maxRow) maxRow = cell.r;
+    if (cell.c < minCol) minCol = cell.c;
+    if (cell.c > maxCol) maxCol = cell.c;
+  }
+  if (maxRow >= 0 && maxCol >= 0) {
+    sheet['!ref'] = XLSX.utils.encode_range({ s: { r: minRow, c: minCol }, e: { r: maxRow, c: maxCol } });
+  }
+}
+
+function parseWorkbookAOA(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const data = new Uint8Array(ev.target.result);
+        const wb = XLSX.read(data, { type: 'array', cellDates: true });
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        fixSheetRange(sheet);
+        resolve(XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, raw: true }));
+      } catch (e) { reject(e); }
+    };
+    reader.onerror = reject;
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+// Auto-detects the real header row (scanning the first rows for the best match against
+// requiredCols) instead of always assuming row 1 — some exports carry a title/metadata
+// row above the actual headers, which trips up naive header-row-1 parsing.
+function buildRowsFromAOA(aoa, requiredCols) {
+  const reqSet = new Set(requiredCols.map(c => c.toLowerCase()));
+  let headerRowIdx = 0, bestMatch = -1;
+  const scanLimit = Math.min(aoa.length, 10);
+  for (let i = 0; i < scanLimit; i++) {
+    const row = aoa[i] || [];
+    const norm = row.map(c => String(c ?? '').trim().toLowerCase());
+    const matchCount = norm.filter(c => reqSet.has(c)).length;
+    if (matchCount > bestMatch) { bestMatch = matchCount; headerRowIdx = i; }
+  }
+  const headerRow = (aoa[headerRowIdx] || []).map(h => String(h ?? '').trim());
+  const rows = aoa.slice(headerRowIdx + 1)
+    .filter(r => r && r.some(v => v !== null && v !== undefined && String(v).trim() !== ''))
+    .map(r => {
+      const obj = {};
+      headerRow.forEach((h, i) => { obj[h] = (r[i] !== undefined ? r[i] : null); });
+      return obj;
+    });
+  return { rows, headerRow };
+}
+
+// Case/whitespace-insensitive field lookup, since detected header text may not match
+// the required column name byte-for-byte (extra spaces, different casing, etc.).
+function getField(row, name) {
+  if (name in row) return row[name];
+  const lname = name.toLowerCase();
+  for (const k in row) {
+    if (k.trim().toLowerCase() === lname) return row[k];
+  }
+  return null;
+}
+
+function findMissingCols(headerRow, requiredCols) {
+  const norm = headerRow.map(h => h.trim().toLowerCase());
+  return requiredCols.filter(c => !norm.includes(c.toLowerCase()));
+}
+
+// Wraps a row-mapping fn so any failure names the offending row index and dumps its raw
+// values, instead of a bare stack trace — that's the difference between a reportable bug
+// and a dead end when the source file has an unanticipated quirk.
+function mapRowsSafe(rows, fn) {
+  return rows.map((r, i) => {
+    try {
+      return fn(r);
+    } catch (e) {
+      throw new Error(`Fila ${i + 1} con datos inesperados (${e.message}). Contenido: ${JSON.stringify(r)}`);
+    }
+  });
+}
+
+function fmtMoney(v) {
+  return Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 });
+}
+function fmtPct(v) {
+  return (Number(v) * 100).toFixed(1) + '%';
+}
+
+function refreshCalcButton() {
+  document.getElementById('calcBtn').disabled = !(pyodide && TRIPS_ROWS.length && COHORT_ROWS.length);
+}
+
+// ---------- Date filter (constrained to whatever dates the uploaded trips actually span) ----------
+function buildDateCheckboxes(dates) {
+  const box = document.getElementById('dateFilterBox');
+  box.innerHTML = '';
+  dates.forEach((d, i) => {
+    const label = document.createElement('label');
+    label.style.cssText = 'display:flex; align-items:center; gap:4px; font-size:12px; font-weight:400; min-width:0;';
+    label.innerHTML = `<input type="checkbox" class="date-check" id="dchk_${i}" data-date="${d}" checked> ${d}`;
+    box.appendChild(label);
+  });
+  box.querySelectorAll('.date-check').forEach(chk => chk.addEventListener('change', updateDateFilterSummary));
+  updateDateFilterSummary();
+}
+
+function getSelectedDates() {
+  return [...document.querySelectorAll('.date-check:checked')].map(chk => chk.dataset.date);
+}
+
+function updateDateFilterSummary() {
+  const total = document.querySelectorAll('.date-check').length;
+  const selected = getSelectedDates().length;
+  document.getElementById('dateFilterSummary').textContent =
+    total ? `${selected} de ${total} fecha(s) seleccionada(s)` : 'Sube los trips para ver las fechas disponibles.';
+}
+
+document.getElementById('selectAllDatesBtn').addEventListener('click', () => {
+  document.querySelectorAll('.date-check').forEach(c => c.checked = true);
+  updateDateFilterSummary();
+});
+document.getElementById('clearAllDatesBtn').addEventListener('click', () => {
+  document.querySelectorAll('.date-check').forEach(c => c.checked = false);
+  updateDateFilterSummary();
+});
+
+// ---------- File loading: trips ----------
+document.getElementById('tripsInput').addEventListener('change', async (e) => {
+  const files = [...e.target.files];
+  if (!files.length) return;
+  document.getElementById('tripsStatus').textContent = 'Leyendo archivo(s)...';
+  try {
+    const required = ['date', 'hour', 'drv_id', 'city', 'trips', 'earnings'];
+    let rows = [];
+    let lastHeaderRow = [];
+    for (const f of files) {
+      const aoa = await parseWorkbookAOA(f);
+      const built = buildRowsFromAOA(aoa, required);
+      lastHeaderRow = built.headerRow;
+      const missing = findMissingCols(built.headerRow, required);
+      if (missing.length) throw new Error(`Faltan columnas en '${f.name}': ${missing.join(', ')} (columnas detectadas: ${built.headerRow.filter(h => h).join(', ') || 'ninguna'})`);
+      rows = rows.concat(built.rows);
+    }
+
+    TRIPS_ROWS = mapRowsSafe(rows, r => ({
+      date: toISODate(getField(r, 'date')),
+      hour: Number(getField(r, 'hour')),
+      drv_id: String(getField(r, 'drv_id')),
+      city: String(getField(r, 'city')),
+      trips: Number(getField(r, 'trips')) || 0,
+      earnings: Number(getField(r, 'earnings')) || 0,
+    }));
+
+    const cities = [...new Set(TRIPS_ROWS.map(r => r.city))];
+    if (cities.length > 1) throw new Error('El archivo tiene más de una ciudad: ' + cities.join(', ') + '. Filtra a una sola ciudad por corrida.');
+    DETECTED_CITY = cities[0];
+
+    const dates = TRIPS_ROWS.map(r => r.date).sort();
+    const dmin = dates[0], dmax = dates[dates.length - 1];
+    const uniqueDates = [...new Set(dates)].sort();
+
+    document.getElementById('cityVal').textContent = DETECTED_CITY + (CITY_INFO[DETECTED_CITY] ? ` (${CITY_INFO[DETECTED_CITY].name})` : '');
+    document.getElementById('windowVal').textContent = `${dmin} a ${dmax}`;
+    document.getElementById('snapshotRefInput').value = dmin;
+    document.getElementById('snapshotRefInput').min = dmin;
+    document.getElementById('snapshotRefInput').max = dmax;
+
+    const info = CITY_INFO[DETECTED_CITY];
+    document.getElementById('hourOffsetInput').value = info ? info.hour_offset : 0;
+    document.getElementById('currencyInput').value = info ? info.currency : '';
+
+    buildDateCheckboxes(uniqueDates);
+
+    document.getElementById('tripsStatus').textContent =
+      `Cargados ${files.length} archivo(s) | ${TRIPS_ROWS.length.toLocaleString()} filas | ciudad ${DETECTED_CITY} | ventana ${dmin} a ${dmax}`;
+  } catch (err) {
+    TRIPS_ROWS = [];
+    document.getElementById('tripsStatus').innerHTML = `<span class="error">Error: ${err.message}</span>`;
+  }
+  refreshCalcButton();
+});
+
+// ---------- File loading: cohort ----------
+document.getElementById('cohortInput').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  document.getElementById('cohortStatus').textContent = 'Leyendo archivo...';
+  try {
+    const required = ['snapshot_date', 'drv_id', 'city', 'cohort'];
+    const aoa = await parseWorkbookAOA(file);
+    const built = buildRowsFromAOA(aoa, required);
+    const missing = findMissingCols(built.headerRow, required);
+    if (missing.length) throw new Error(`Faltan columnas: ${missing.join(', ')} (columnas detectadas: ${built.headerRow.filter(h => h).join(', ') || 'ninguna'})`);
+    const rows = built.rows;
+
+    COHORT_ROWS = mapRowsSafe(rows, r => ({
+      snapshot_date: toISODate(getField(r, 'snapshot_date')),
+      drv_id: String(getField(r, 'drv_id')),
+      city: String(getField(r, 'city')),
+      cohort: String(getField(r, 'cohort')),
+    }));
+
+    const snaps = [...new Set(COHORT_ROWS.map(r => r.snapshot_date))].sort();
+    document.getElementById('cohortStatus').textContent =
+      `Cargadas ${COHORT_ROWS.length.toLocaleString()} filas | snapshots disponibles: ${snaps.join(', ')}`;
+  } catch (err) {
+    COHORT_ROWS = [];
+    document.getElementById('cohortStatus').innerHTML = `<span class="error">Error: ${err.message}</span>`;
+  }
+  refreshCalcButton();
+});
+
+// ---------- Hour range rows ----------
+let rangeCount = 0;
+function addRangeRow(start, end) {
+  rangeCount++;
+  const tbody = document.getElementById('rangeTbody');
+  const tr = document.createElement('tr');
+  tr.className = 'range-row';
+  tr.innerHTML = `
+    <td class="rangenum">${rangeCount}</td>
+    <td><input type="number" class="range-start" min="0" max="23" value="${start ?? 0}"></td>
+    <td><input type="number" class="range-end" min="0" max="23" value="${end ?? 23}"></td>
+  `;
+  tbody.appendChild(tr);
+}
+function removeRangeRow() {
+  const tbody = document.getElementById('rangeTbody');
+  if (tbody.children.length > 1) { tbody.removeChild(tbody.lastChild); rangeCount--; renumber('.rangenum', '#rangeTbody'); }
+}
+
+// ---------- Tier rows ----------
+let tierCount = 0;
+function addTierRow(minTrips, reward) {
+  tierCount++;
+  const tbody = document.getElementById('tierTbody');
+  const tr = document.createElement('tr');
+  tr.className = 'tier-row';
+  tr.innerHTML = `
+    <td class="tiernum">${tierCount}</td>
+    <td><input type="number" class="tier-min" value="${minTrips ?? 0}"></td>
+    <td><input type="number" class="tier-reward" value="${reward ?? 0}"></td>
+  `;
+  tbody.appendChild(tr);
+}
+function removeTierRow() {
+  const tbody = document.getElementById('tierTbody');
+  if (tbody.children.length > 1) { tbody.removeChild(tbody.lastChild); tierCount--; renumber('.tiernum', '#tierTbody'); }
+}
+
+// ---------- Guarantee tier rows (separate table so switching type never loses either config) ----------
+let guaranteeTierCount = 0;
+function addGuaranteeTierRow(minTrips, amount) {
+  guaranteeTierCount++;
+  const tbody = document.getElementById('guaranteeTierTbody');
+  const tr = document.createElement('tr');
+  tr.className = 'tier-row';
+  tr.innerHTML = `
+    <td class="tiernum">${guaranteeTierCount}</td>
+    <td><input type="number" class="guarantee-tier-min" value="${minTrips ?? 0}"></td>
+    <td><input type="number" class="guarantee-tier-amount" value="${amount ?? 0}"></td>
+  `;
+  tbody.appendChild(tr);
+}
+function removeGuaranteeTierRow() {
+  const tbody = document.getElementById('guaranteeTierTbody');
+  if (tbody.children.length > 1) { tbody.removeChild(tbody.lastChild); guaranteeTierCount--; renumber('.tiernum', '#guaranteeTierTbody'); }
+}
+
+// ---------- Incentive type switch ----------
+let INCENTIVE_TYPE = 'dxgy';
+document.querySelectorAll('#incentiveTypeSwitch .switch-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    INCENTIVE_TYPE = btn.dataset.type;
+    document.querySelectorAll('#incentiveTypeSwitch .switch-btn').forEach(b => b.classList.toggle('active', b === btn));
+    const isGuarantee = INCENTIVE_TYPE === 'guarantee';
+    document.getElementById('dxgyTierWrap').style.display = isGuarantee ? 'none' : '';
+    document.getElementById('guaranteeTierWrap').style.display = isGuarantee ? '' : 'none';
+    document.getElementById('payoutModeRow').style.display = isGuarantee ? 'none' : '';
+    document.getElementById('guaranteeNote').style.display = isGuarantee ? '' : 'none';
+  });
+});
+
+function renumber(cls, tbodySel) {
+  [...document.querySelectorAll(tbodySel + ' tr')].forEach((tr, idx) => {
+    tr.querySelector(cls).textContent = idx + 1;
+  });
+}
+
+document.getElementById('addRangeBtn').addEventListener('click', () => addRangeRow());
+document.getElementById('removeRangeBtn').addEventListener('click', removeRangeRow);
+document.getElementById('addTierBtn').addEventListener('click', () => addTierRow());
+document.getElementById('removeTierBtn').addEventListener('click', removeTierRow);
+document.getElementById('addGuaranteeTierBtn').addEventListener('click', () => addGuaranteeTierRow());
+document.getElementById('removeGuaranteeTierBtn').addEventListener('click', removeGuaranteeTierRow);
+
+// Defaults matching the original DxGyIncentive example
+addRangeRow(0, 23);
+addTierRow(25, 50);
+addTierRow(35, 22);
+addTierRow(40, 13);
+
+// Defaults matching the original GuaranteeIncentive example
+addGuaranteeTierRow(5, 13000);
+addGuaranteeTierRow(10, 28000);
+addGuaranteeTierRow(13, 39000);
+addGuaranteeTierRow(15, 48000);
+addGuaranteeTierRow(20, 80000);
+
+// ---------- Calculation ----------
+document.getElementById('calcBtn').addEventListener('click', runCalculation);
+
+async function runCalculation() {
+  if (!pyodide || !TRIPS_ROWS.length || !COHORT_ROWS.length) return;
+
+  const selectedDates = getSelectedDates();
+  if (!selectedDates.length) {
+    document.getElementById('calcStatus').innerHTML = '<span class="error">Selecciona al menos una fecha en "Fechas incluidas".</span>';
+    return;
+  }
+
+  document.getElementById('calcStatus').textContent = 'Calculando...';
+  document.getElementById('calcBtn').disabled = true;
+
+  const hourRanges = [...document.querySelectorAll('#rangeTbody tr')].map(tr => [
+    parseInt(tr.querySelector('.range-start').value) || 0,
+    parseInt(tr.querySelector('.range-end').value) || 0,
+  ]);
+  const isGuarantee = INCENTIVE_TYPE === 'guarantee';
+  const tiers = isGuarantee
+    ? [...document.querySelectorAll('#guaranteeTierTbody tr')].map(tr => ({
+        min_trips: parseFloat(tr.querySelector('.guarantee-tier-min').value) || 0,
+        reward: parseFloat(tr.querySelector('.guarantee-tier-amount').value) || 0,
+      }))
+    : [...document.querySelectorAll('#tierTbody tr')].map(tr => ({
+        min_trips: parseFloat(tr.querySelector('.tier-min').value) || 0,
+        reward: parseFloat(tr.querySelector('.tier-reward').value) || 0,
+      }));
+  const hourOffset = parseInt(document.getElementById('hourOffsetInput').value) || 0;
+  const snapshotRef = document.getElementById('snapshotRefInput').value;
+  const payoutMode = document.getElementById('payoutModeSelect').value;
+  const incrementality = parseFloat(document.getElementById('incrementalityInput').value) || 1;
+  const currency = document.getElementById('currencyInput').value || '';
+
+  try {
+    const fn = pyodide.globals.get('run_dxgy_pipeline');
+    const resultJson = fn(
+      JSON.stringify(TRIPS_ROWS),
+      JSON.stringify(COHORT_ROWS),
+      DETECTED_CITY,
+      hourOffset,
+      snapshotRef,
+      JSON.stringify(hourRanges),
+      JSON.stringify(tiers),
+      payoutMode,
+      incrementality,
+      JSON.stringify(selectedDates),
+      INCENTIVE_TYPE
+    );
+    const result = JSON.parse(resultJson);
+    fn.destroy();
+
+    if (result.error) throw new Error(result.error);
+
+    renderReport(result.report, currency);
+    renderTopDrivers(result.top_drivers, currency);
+    renderMeta(result.meta);
+
+    document.getElementById('calcStatus').textContent = 'Cálculo actualizado.';
+  } catch (err) {
+    document.getElementById('calcStatus').innerHTML = `<span class="error">Error: ${err.message}</span>`;
+  }
+  document.getElementById('calcBtn').disabled = false;
+}
+
+function renderMeta(meta) {
+  let dupWarning = meta.dup_cohort_drv > 0
+    ? ` <span class="error">(${meta.dup_cohort_drv} drv_id están en más de un cohort en el snapshot)</span>`
+    : '';
+  document.getElementById('metaLine').innerHTML =
+    `Filas de trips: ${meta.rows_trips.toLocaleString()} | drv en snapshot de cohort: ${meta.n_drv_cohort_total.toLocaleString()} | ` +
+    `drv con actividad en el rango configurado: ${meta.n_drv_with_trips_in_scope.toLocaleString()} | snapshot usado: ${meta.snapshot_used}${dupWarning}`;
+}
+
+function renderReport(report, currency) {
+  const tbody = document.getElementById('reportTbody');
+  tbody.innerHTML = '';
+  let grandTotal = 0;
+
+  report.forEach((row, i) => {
+    grandTotal += row.total_cost;
+    const tr = document.createElement('tr');
+    tr.dataset.cost = row.total_cost;
+    tr.innerHTML = `
+      <td class="checkbox-cell"><input type="checkbox" class="cohort-check" id="chk_${i}"></td>
+      <td style="text-align:left;">${row.cohort}</td>
+      <td>${row.n_drv_in_cohort.toLocaleString()}</td>
+      <td>${row.n_drv_active.toLocaleString()}</td>
+      <td>${fmtPct(row.pct_active)}</td>
+      <td>${row.n_drv_earned.toLocaleString()}</td>
+      <td>${fmtPct(row.pct_earned)}</td>
+      <td>${fmtMoney(row.total_cost)} ${currency}</td>
+      <td>${row.avg_cost_per_earner ? fmtMoney(row.avg_cost_per_earner) + ' ' + currency : '-'}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  document.getElementById('grandTotal').textContent = fmtMoney(grandTotal) + ' ' + currency;
+  document.getElementById('resultsPanel').style.display = '';
+  updateSubtotal();
+
+  tbody.querySelectorAll('.cohort-check').forEach(chk => {
+    chk.addEventListener('change', updateSubtotal);
+  });
+}
+
+function updateSubtotal() {
+  const checks = [...document.querySelectorAll('.cohort-check')];
+  let sum = 0, count = 0;
+  checks.forEach(chk => {
+    const tr = chk.closest('tr');
+    tr.classList.toggle('report-row-selected', chk.checked);
+    if (chk.checked) { sum += Number(tr.dataset.cost); count++; }
+  });
+  const currency = document.getElementById('currencyInput').value || '';
+  document.getElementById('selSubtotal').textContent = fmtMoney(sum) + ' ' + currency;
+  document.getElementById('selCount').textContent = count;
+}
+
+document.getElementById('selectAllBtn').addEventListener('click', () => {
+  document.querySelectorAll('.cohort-check').forEach(c => c.checked = true);
+  updateSubtotal();
+});
+document.getElementById('clearAllBtn').addEventListener('click', () => {
+  document.querySelectorAll('.cohort-check').forEach(c => c.checked = false);
+  updateSubtotal();
+});
+
+function renderTopDrivers(top, currency) {
+  const tbody = document.getElementById('topDriversTbody');
+  tbody.innerHTML = '';
+  top.forEach(r => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${r.drv_id}</td>
+      <td>${r.cohort}</td>
+      <td>${r.total_trips}</td>
+      <td>${fmtMoney(r.total_earnings)}</td>
+      <td>${r.projected_trips}</td>
+      <td>${fmtMoney(r.payout)} ${currency}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+  document.getElementById('topDriversPanel').style.display = top.length ? '' : 'none';
+}
+</script>
+</body>
+</html>
