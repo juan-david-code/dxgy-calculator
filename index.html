@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>Calculadora de Forecast DxGy - DiDi</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧮</text></svg>">
 <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -192,6 +193,7 @@
 <div class="wrap">
   <div class="top-bar-row">
     <h1 class="title" style="flex:1; margin-bottom:0;">Calculadora de Forecast DxGy - DiDi</h1>
+    <button type="button" id="openCartModalBtn" class="secondary city-gear-btn">🛒 Carrito Magellan (<span id="cartCount">0</span>)</button>
     <button type="button" id="openCityModalBtn" class="secondary city-gear-btn">⚙ Ciudades</button>
   </div>
 
@@ -337,6 +339,45 @@
     <div id="calcStatus"></div>
   </div>
 
+  <div class="panel">
+    <div class="black-bar">3. SUBIR A MAGELLAN</div>
+    <div class="meta-line">Arma la campaña con la configuración actual (tipo de incentivo, tiers) y agrégala al carrito.</div>
+    <div class="top-controls">
+      <div class="control-box">
+        <div class="lbl">Ciudad del incentivo</div>
+        <div class="val" id="magellanCityVal" style="font-size:15px;">-</div>
+      </div>
+      <div class="control-box">
+        <div class="row-inline" style="margin:0;"><label>Reward Period</label>
+          <input type="date" id="rewardPeriodStartInput" style="width:130px;">
+          <span class="muted">a</span>
+          <input type="date" id="rewardPeriodEndInput" style="width:130px;">
+        </div>
+      </div>
+      <div class="control-box">
+        <div class="row-inline" style="margin:0;"><label>Target Group (DTAC ID)</label>
+          <input type="text" id="targetGroupInput" style="width:140px;" placeholder="1000977081">
+        </div>
+      </div>
+      <div class="control-box">
+        <div class="row-inline" style="margin:0;"><label>Ratio of Control Group (%)</label>
+          <input type="number" id="ratioControlInput" value="10" min="0" max="100" style="width:70px;">
+        </div>
+      </div>
+    </div>
+    <div class="row-inline">
+      <label>Event Period / Task Validity Period</label>
+      <input type="text" id="eventPeriodInput" style="width:220px;" placeholder="00:00-23:59">
+      <button type="button" id="refreshEventPeriodBtn" class="secondary">↺ Recalcular desde franjas horarias</button>
+    </div>
+    <div class="row-inline">
+      <label>Push1_Send Time</label>
+      <input type="datetime-local" id="push1SendTimeInput" style="width:200px;">
+    </div>
+    <button id="addToCartBtn">🛒 Agregar incentivo al carrito</button>
+    <div id="cartAddStatus" class="meta-line"></div>
+  </div>
+
   <div class="panel" id="resultsPanel" style="display:none;">
     <div class="black-bar">3. REPORTE DE COSTO POR COHORT</div>
     <div id="metaLine" class="meta-line"></div>
@@ -389,6 +430,27 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="cartModalOverlay">
+  <div class="modal-box" style="max-width:900px;">
+    <div class="modal-header">
+      <span>Carrito de campañas Magellan</span>
+      <button type="button" id="closeCartModalBtn" class="modal-close">&times;</button>
+    </div>
+    <div class="meta-line">Cada fila se convierte en una fila de la plantilla de Magellan al descargar. Queda guardado en este navegador hasta que lo consolides.</div>
+    <table>
+      <thead>
+        <tr><th></th><th>Tipo</th><th>Ciudad</th><th>Event Type</th><th>Reward Period</th><th>Event Period</th><th>Push1_Send Time</th><th>Target Group</th><th>Event Rules</th></tr>
+      </thead>
+      <tbody id="cartTbody"></tbody>
+    </table>
+    <div id="cartEmptyMsg" class="meta-line" style="display:none;">El carrito está vacío. Configura un incentivo arriba y dale "Agregar incentivo al carrito".</div>
+    <div class="row-inline" style="margin-top:14px;">
+      <button id="clearCartBtn" class="secondary">Vaciar carrito</button>
+      <button id="downloadCartBtn">⬇ Consolidar y descargar plantilla</button>
+    </div>
+  </div>
+</div>
+
 <script>
 let TRIPS_ROWS = [];      // parsed & normalized rows from trips file(s)
 let COHORT_ROWS = [];     // parsed & normalized rows from cohort file
@@ -396,6 +458,50 @@ let DETECTED_CITY = null;
 let pyodide = null;
 
 // ---------- City registry (persisted in this browser, editable via the "Ciudades configuradas" table) ----------
+// ---------- Magellan upload boilerplate (verbatim from Juan's DxGy/Guarantee examples;
+// Multiplier reuses the DxGy example, no dedicated example exists yet) ----------
+const MAGELLAN_BOILERPLATE = {
+  "dxgy": {
+    "driver_type": "Express",
+    "request_type": "Express,Set Your Fare",
+    "star_rating": "3",
+    "title": "Genera hasta {{maximum_total_amount}} EXTRA!",
+    "notes": "¿Quién organiza?\nDiDi Mobility Information Technology Pte. Ltd., sociedad constituida y válidamente existente de acuerdo a las leyes de Singapur, y domiciliada para estos efectos en 111 North Bridge Road #06-20 Peninsula Plaza Singapore (179098), es responsable de y presenta los Términos y Condiciones de la presente promoción (la “Promoción”).\n¿Cómo funciona?\nAl abrir la aplicación DiDi Conductor en la sección \"Premios\" el Socio Conductor (según se define más adelante) encontrará una ventana en donde aparecerá información que complementa estos Términos y Condiciones (la \"Ventana\"). La Promoción será válida durante el periodo denominado \"Periodo de la Promoción\", que aparece en la zona denominada \"Área válida\" en la parte superior de la Ventana para los Socios Conductores registrados y habilitados para conducir en Perú conectados con la aplicación DiDi Conductor en las ciudades donde ésta se encuentre disponible (el “Territorio”).\nPara los efectos de esta promoción, se entenderá por “Socio Conductor” aquella persona que se ha registrado válidamente en la aplicación DiDi Conductor antes o durante el Periodo de la Promoción.\nRequisitos de elegibilidad\nSerán elegibles para participar de la presente Promoción los Socios Conductores que cumplan con las siguientes condiciones:\nHaber recibido una comunicación para participar en la Promoción o que la Promoción se encuentre activa en la aplicación DiDi Conductor utilizando sus credenciales de Socio Conductor; y,De corresponder, aquellos requisitos adicionales que se especifiquen en la Ventana.\nMecánica de la Promoción\nDurante el Periodo de la Promoción, los Socios Conductores que cumplan con los requisitos de elegibilidad y deseen participar de la misma deberán completar los requisitos que se indiquen expresamente en la Ventana para ser acreedores de la recompensa de la Promoción que se indica en la Ventana.\nEn caso de que se requiera completar una cantidad de viajes, únicamente se considerarán para efectos de la Promoción aquellos viajes válidos completados por el Socio Conductor. Se considerarán como viajes válidos aquellos que (i) hayan comenzado y finalizado en la plataforma DiDi Conductor; (ii) cumplan con los demás requisitos para la Promoción señalados en la App, y (ii) cumplan con los Términos y Condiciones de Uso de DiDi Conductor. En caso de revisión de los viajes, el equipo de Soporte podrá tardar hasta 30 días calendario en realizar la verificación.\nLas recompensas producto de esta Promoción serán depositadas en la Billetera del Socio Conductor que haya cumplido con con los requisitos de elegibilidad así como la mecánica de la promoción establecidos en los presentes Términos y Condiciones dentro de los cinco (5) días hábiles después de que complete el objetivo de la Promoción iniciado en la Ventana.\nMiscelaneas\nLa invitación por parte de DiDi a participar de la Promoción es personal e intransferible.DiDi puede modificar estos Términos y Condiciones, así como modificar, suspender, cancelar o prorrogar la Promoción, mediante previa notificación a través de los mismos medios de comunicación que usó para dar a conocer esta Promoción.DiDi tiene el derecho de revisar cada uno de los viajes y demás condiciones de la Promoción para identificar la correcta realización de los mismos en el marco de la Promoción. De encontrar algún comportamiento irregular, la solicitud o la condición podrá ser calificada como inválida y DiDi se encontrará facultado a limitar el uso de la aplicación al Socio Conductor, y excluir, incluso desde el inicio, la participación en la Promoción.DiDi se reserva el derecho de cancelar la entrega de las recompensas de la Promoción ante cualquier tipo de sospecha de irregularidad, abuso de derecho o mala fe por parte del Socio Conductor.\nEl Socio Conductor entiende que los requisitos aquí establecidos son sólo para obtener las recompensas de la presente Promoción y que su participación en ella es totalmente voluntaria. En consecuencia, el Socio Conductor reconoce que es libre de seguir utilizando la Aplicación fuera de la Promoción, para realizar sus viajes con la frecuencia y en los horarios que éste libremente determine.\nEn caso se requiera como requisito de elegibilidad para participar de la Promoción, se entenderá por Tasa de Aceptación la relación entre la cantidad de solicitudes de viajes aceptadas por el Socio Conductor sobre la cantidad de solicitudes de viajes recibidas, menos las solicitudes de viajes excluidas. Los casos en que se supere el límite de tiempo para responder a una solicitud de viaje, o bien se rechace una solicitud de viaje por el Socio Conductor, se considerarán como solicitudes de viaje recibidas y no aceptadas, para efectos de calcular la Tasa de Aceptación.\nUn viaje no se considerará como “rechazado” si el Socio Conductor lo cancela antes de que finalice el tiempo indicado en la aplicación DiDi Conductor, o cuando el Socio Conductor no pueda aceptar una solicitud por un error de red, o cuando el viaje sea desde o hacia una zona de riesgo (según lo que muestre la aplicación).\nSe hace presente que los requisitos específicos relativos a la Tasa de Aceptación operan sólo para esta Promoción. Cada Socio Conductor es libre de participar o no de la Promoción, y siempre podrá, si así lo desea, utilizar la aplicación DiDi Conductor sin participar de la Promoción.\nEl proceso de verificación y validación de los viajes que realice DiDi puede durar hasta treinta (30) días calendario y las recompensas a ser depositadas por DiDi podrán estar sujetas a variaciones de conformidad con el proceso de verificación y los presentes Términos y Condiciones.\nLa renuncia a las recompensas ofrecidas por DiDi en esta Promoción, cualquiera que sea la razón que la motive, o su expiración por vencimiento de su vigencia, no dará derecho al Socio Conductor a ningún tipo de compensación. Bajo ninguna circunstancia será canjeable por bienes de otra índole.\nDiDi asume absoluta responsabilidad únicamente en las actividades que le corresponden de conformidad a las mecánicas anteriormente descritas, siempre y cuando se encuentre especificada en estos Términos y Condiciones. DiDi no será responsable bajo ninguna circunstancia por los daños y perjuicios que pudiera ocasionar la recompensa recibida, ni los que eventualmente se generarán a cualquier Socio Conductor por su participación en la Promoción.\nCaso Fortuito o Fuerza Mayor: En caso de que se presente un evento de caso fortuito o fuerza mayor que afecte el desarrollo de la Promoción, DiDi podrá suspender definitivamente el cumplimiento de sus obligaciones, y no incurrirá en incumplimiento de los Términos y Condiciones; lo anterior, en el entendido que DiDi realizará su mejor esfuerzo para resolver dicha causa y mitigar las pérdidas. Caso fortuito o fuerza mayor significa cualquier causa impredecible e inevitable (aun cuando sea previsible) fuera del control de DiDi que impida, afecte o demore el cumplimiento de cualquiera de sus obligaciones conforme a la Promoción. Dichas causas incluyen, sin limitación, terremotos, guerra, modificación de las leyes, reglamentos y políticas gubernamentales, virus de cómputo, ataques de hackers o suspensión de servicios prestados por empresas de telecomunicaciones.\nToda cuestión que en virtud de estos Términos y Condiciones se genere entre cualquier Socio Conductor y DiDi, será derivado a y definitivamente resuelto mediante arbitraje administrado por el Centro de Arbitraje Internacional de Singapur (“CAIS”) de acuerdo a las Reglas de Arbitraje del CAIS vigentes en el momento del arbitraje, reglas que se consideran incorporadas por referencia en esta cláusula. El número de árbitros será uno. La sede, o lugar legal, del arbitraje será Singapur. El idioma que se utilizará en el procedimiento arbitral será el inglés. La decisión del árbitro será definitiva y vinculante para las Partes, salvo en caso de error manifiesto. Los costos del árbitro serán soportados por igual entre las Partes o según lo indique el árbitro. El Socio Conductor renuncia expresa e irrevocablemente a su derecho de someter la disputa a los tribunales o tribunales arbitrales de cualquier otra jurisdicción.\nDe manera supletoria a estos Términos y Condiciones, a los participantes de la presente Promoción le serán aplicables también los Términos y Condiciones de Uso de DiDi Conductor que estén vigentes durante la relación entre DiDi y el Socio Conductor.\nEn caso exista algún inconveniente, el Conductor podrá remitir sus dudas y consultas a través de la aplicación de DiDi Conductor, en la opción “Ayuda”.\nDemás Términos y Condiciones se encuentran aquí: https://d.didiglobal.com/cZ6HmL\n\n© 2024 DiDi\n@GLN",
+    "push1_send_time": "2026-08-22 06:00",
+    "push1_audience": "Drivers participating in the event",
+    "push1_content": "Realiza viajes y genera S/. {{maximum_total_amount}} EXTRA!\n\nVálido durante {{campaign_time}} ",
+    "push2_send_time": "",
+    "push2_audience": "",
+    "push2_content": ""
+  },
+  "guarantee": {
+    "driver_type": "Express",
+    "request_type": "Express,Set Your Fare,Rapid",
+    "star_rating": "3",
+    "title": "¡Garantiza hasta {{maximum_total_amount}} con DiDi!",
+    "notes": "Términos y Condiciones\nPromoción “Ganancias Garantizadas”\n\nDiDi Mobility Information Technology Pte. Ltd. (“DiDi”), es una sociedad debidamente constituida conforme a las leyes de Singapur con domicilio en 111 North Bridge Road #06-20 Peninsula Plaza Singapore (179098), es responsable de y presenta los Términos y Condiciones de la Promoción “Ganancias Garantizadas” (los “Términos y Condiciones”) y actúa como el responsable de la organización de la misma.\n\nLa promoción “Ganancias Garantizadas” (la \"Promoción\") consiste en un programa de recompensas exclusivo para personas que se registren como conductores en la aplicación DiDi Conductor (la “Aplicación”) en las modalidades DiDi Express y DiDi Pon Tu Precio, haciendo click en los links relacionados a esta promoción que DiDi y/o sus empresas relacionadas publiquen en sus redes sociales. La Promoción permanecerá vigente desde las 00:01 hrs hasta las 23:59 hrs del “Periodo de Vigencia”. El Periodo de Vigencia podrá ser modificado unilateralmente por DiDi, para lo cual bastará con comunicar el nuevo Periodo de Vigencia por los mismos medios por los que se comunicó la Promoción.\n\nPara efectos de claridad, se considerará “Conductor” a las personas que hayan completado válidamente su registro como Conductores en la Aplicación en el Área Válida (según se define a continuación), exclusivamente a través de los links o hipervínculos relacionados a esta promoción, que DiDi y/o sus empresas relacionadas publiquen en sus redes sociales.\n\nPara efectos del presente documento:\n\n“Área Válida” significa las ciudades de Perú donde esté disponible la Aplicación.\n“Día de Promoción” se refiere al periodo de veinticuatro horas consecutivas, considerado desde las 00:01 horas a las 23:59 horas, dentro del Periodo de Vigencia durante el cual se contabilizará el cumplimiento de la Mecánica de la Promoción.\n“Ganancias Ordinarias Diarias” significa las cantidades ordinarias generadas por los Conductores por los Viajes que realicen utilizando la Aplicación, considerando todas las ganancias generadas durante un Día de Promoción incluyendo las ganancias adicionales de otros incentivos y promociones disponibles durante dicho periodo.\n“Ganancias Garantizadas” se refiere a las cantidades que obtendrá el Conductor, si cumple con los requisitos de elegibilidad y la mecánica de la Promoción, así como los presentes Términos y Condiciones, siempre que sus Ganancias Ordinarias Diarias no alcanzan dicho/s monto/s.\n“Viajes” se refiere a la cantidad de viajes completados por el Conductor exentos de fraude y cualquier maniobra de mala fe que busque alterar los valores de los viajes realizados a través de la Aplicación en las modalidades DiDi Express y DiDi Pon Tu Precio y que: (i) hayan comenzado y finalizado en la plataforma DiDi Conductor; (ii) hayan sido realizados dentro del Área Válida durante el Periodo de Vigencia; y (iii) cumplan con los Términos y Condiciones de uso de DiDi Conductor.\n\nRequisitos de Elegibilidad: Podrán participar de la presente Promoción los Conductores que hayan completado satisfactoriamente su registro en la Aplicación durante el Periodo de Vigencia y en el Área Válida, así como que cumplan con los Términos y Condiciones de Uso de la Aplicación.\n\nMecánica de la Promoción: El Conductor tendrá disponibles los desafíos que se especifican a continuación y, a efectos de obtener las Ganancias Garantizadas correspondientes, deberá realizar la totalidad de Viajes del desafío asignado. Por defecto, la Aplicación asignará al Conductor el primer desafío, siendo que el Conductor podrá pasar al siguiente una vez completado el primero.\n\nEn caso que las Ganancias Ordinarias sean mayores al monto indicado, entonces el Conductor ya habrá recibido el monto garantizado y, en consecuencia, no recibirá un monto por concepto de Ganancias Garantizadas.\n\nEl Conductor entiende que los requisitos aquí establecidos son sólo para obtener las recompensas establecidas en la presente Promoción, y que su participación en ella es totalmente voluntaria. En consecuencia, el Conductor reconoce que es libre de seguir utilizando la Aplicación fuera de la Promoción, para realizar sus viajes con la frecuencia y en los horarios que él libremente determine.\n\nEl pago de las Ganancias Garantizadas Diarias, de corresponder, será depositado al Conductor dentro de los siete (7) días hábiles después de que el Conductor complete los Viajes establecidos en la Mecánica de la Promoción de los presentes Términos y Condiciones, finalizados dentro del plazo estipulado, y que cumplan con las demás condiciones y requisitos de la presente Promoción.\n\nEl pago de las Ganancias Garantizadas, de corresponder, se hará directamente en la cuenta inscrita por el Conductor en la aplicación DiDi Conductor.\n\nDiDi se reserva el derecho a revisar cada uno de los viajes para identificar la correcta realización de los mismos en el marco de la Promoción. El proceso de verificación y validación de los viajes que realice DiDi puede durar hasta treinta (30) días corridos y las recompensas a ser pagadas por DiDi podrán estar sujetas a variaciones de conformidad con el proceso de verificación y los presentes Términos y Condiciones. De encontrar algún comportamiento irregular o en caso de cualquier tipo de sospecha de fraude, abuso del derecho o mala fe, sea por parte del Conductor, el viaje podrá ser calificado como inválido y DiDi se encontrará facultado a: i) bloquear definitivamente al Conductor; ii) adicionalmente, excluirlos del pago de la Recompensa, en caso de corresponder, con relación a su participación en la Promoción; iii) cancelar la entrega de las Ganancias Garantizadas; iv) recuperar los pagos que el Conductor pueda recibir y/o que hayan sido emitidos en el marco de esta Promoción; y v) exigir responsabilidades a los participantes. Todo aquello sin perjuicio de las acciones legales que pueda iniciar DiDi. DiDi no realizará ninguna compensación por las pérdidas causadas a los participantes. Los medios indebidos o comportamientos tramposos incluyen, entre otros: compartir, descargar, instalar, registrar e iniciar sesión en múltiples cuentas utilizando herramientas ilegales, hacer trampas en la verificación facial y otros medios indebidos.\n\nDe manera supletoria a estos Términos y Condiciones, al Conductor le serán aplicables también los Términos y Condiciones de Uso de DiDi Conductor que estén vigentes durante la relación entre DiDi y el Conductor.\n\nLa renuncia a alguna de las recompensas de esta Promoción, cualquiera que sea la razón que la motive, o su expiración por vencimiento de su vigencia, no dará derecho al Conductor a ningún tipo de compensación. Bajo ninguna circunstancia la recompensa será canjeable por dinero en cualquiera de sus formas, o bienes de otra índole.\n\nDiDi asume absoluta responsabilidad únicamente en las actividades que le corresponden de conformidad a las mecánicas anteriormente descritas, siempre y cuando se encuentre especificada en estos Términos y Condiciones. DiDi no será responsable bajo ninguna circunstancia por los daños y perjuicios que pudiera ocasionar la recompensa recibida, ni los que eventualmente se generarán a cualquier Conductor por su participación en la dinámica.\n\nDiDi puede modificar estos Términos y Condiciones, así como modificar, suspender, cancelar o prorrogar la Promoción, mediante previa notificación a través de los mismos medios de comunicación que usó para dar a conocer esta Promoción.\n\nLos asuntos no especificados por los presentes Términos y Condiciones serán resueltos por DiDi de manera definitiva e inapelable.\n\nCaso Fortuito o Fuerza Mayor: En caso de que se presente un evento de caso fortuito o fuerza mayor que afecte el desarrollo de la Promoción, DiDi podrá suspender definitivamente el cumplimiento de sus obligaciones, y no incurrirá en incumplimiento de los Términos y Condiciones; lo anterior, en el entendido que DiDi realizará su mejor esfuerzo para resolver dicha causa y mitigar las pérdidas. Caso fortuito o fuerza mayor significa cualquier causa impredecible e inevitable (aun cuando sea previsible) fuera del control de DiDi que impida, afecte o demore el cumplimiento de cualquiera de sus obligaciones conforme a la Promoción. Dichas causas incluyen, sin limitación, terremotos, guerra, modificación de las leyes, reglamentos y políticas gubernamentales, virus de cómputo, ataques de hackers o suspensión de servicios prestados por empresas de telecomunicaciones.\n\nLa presente Promoción está sujeta en lo que corresponde a los Términos y Condiciones de la aplicación DiDi Conductor, incluyendo sin limitarse a ley aplicable y jurisdicción.\n\nPara cualquier duda o aclaración acerca de este programa favor de remitir sus dudas y consultas a través de la aplicación de DiDi Conductor, en la opción “Ayuda”. @LC",
+    "push1_send_time": "2026-07-03 13:00",
+    "push1_audience": "Drivers participating in the event",
+    "push1_content": "Garantiza hasta {{maximum_total_amount}} por completar {{maximum_trips}} viajes durante {{campaign_time}}\n\n*Válido para viajes en Express, Pon tu Precio y Más Rapido.",
+    "push2_send_time": "2026-07-03 17:00",
+    "push2_audience": "The driver who did not complete the award",
+    "push2_content": "Conduce durante {{campaign_time}} y garantiza hasta {{maximum_total_amount}} por realizar {{maximum_trips}} viajes."
+  },
+  "multiplier": {
+    "driver_type": "Express",
+    "request_type": "Express,Set Your Fare",
+    "star_rating": "3",
+    "title": "Genera hasta {{maximum_total_amount}} EXTRA!",
+    "notes": "¿Quién organiza?\nDiDi Mobility Information Technology Pte. Ltd., sociedad constituida y válidamente existente de acuerdo a las leyes de Singapur, y domiciliada para estos efectos en 111 North Bridge Road #06-20 Peninsula Plaza Singapore (179098), es responsable de y presenta los Términos y Condiciones de la presente promoción (la “Promoción”).\n¿Cómo funciona?\nAl abrir la aplicación DiDi Conductor en la sección \"Premios\" el Socio Conductor (según se define más adelante) encontrará una ventana en donde aparecerá información que complementa estos Términos y Condiciones (la \"Ventana\"). La Promoción será válida durante el periodo denominado \"Periodo de la Promoción\", que aparece en la zona denominada \"Área válida\" en la parte superior de la Ventana para los Socios Conductores registrados y habilitados para conducir en Perú conectados con la aplicación DiDi Conductor en las ciudades donde ésta se encuentre disponible (el “Territorio”).\nPara los efectos de esta promoción, se entenderá por “Socio Conductor” aquella persona que se ha registrado válidamente en la aplicación DiDi Conductor antes o durante el Periodo de la Promoción.\nRequisitos de elegibilidad\nSerán elegibles para participar de la presente Promoción los Socios Conductores que cumplan con las siguientes condiciones:\nHaber recibido una comunicación para participar en la Promoción o que la Promoción se encuentre activa en la aplicación DiDi Conductor utilizando sus credenciales de Socio Conductor; y,De corresponder, aquellos requisitos adicionales que se especifiquen en la Ventana.\nMecánica de la Promoción\nDurante el Periodo de la Promoción, los Socios Conductores que cumplan con los requisitos de elegibilidad y deseen participar de la misma deberán completar los requisitos que se indiquen expresamente en la Ventana para ser acreedores de la recompensa de la Promoción que se indica en la Ventana.\nEn caso de que se requiera completar una cantidad de viajes, únicamente se considerarán para efectos de la Promoción aquellos viajes válidos completados por el Socio Conductor. Se considerarán como viajes válidos aquellos que (i) hayan comenzado y finalizado en la plataforma DiDi Conductor; (ii) cumplan con los demás requisitos para la Promoción señalados en la App, y (ii) cumplan con los Términos y Condiciones de Uso de DiDi Conductor. En caso de revisión de los viajes, el equipo de Soporte podrá tardar hasta 30 días calendario en realizar la verificación.\nLas recompensas producto de esta Promoción serán depositadas en la Billetera del Socio Conductor que haya cumplido con con los requisitos de elegibilidad así como la mecánica de la promoción establecidos en los presentes Términos y Condiciones dentro de los cinco (5) días hábiles después de que complete el objetivo de la Promoción iniciado en la Ventana.\nMiscelaneas\nLa invitación por parte de DiDi a participar de la Promoción es personal e intransferible.DiDi puede modificar estos Términos y Condiciones, así como modificar, suspender, cancelar o prorrogar la Promoción, mediante previa notificación a través de los mismos medios de comunicación que usó para dar a conocer esta Promoción.DiDi tiene el derecho de revisar cada uno de los viajes y demás condiciones de la Promoción para identificar la correcta realización de los mismos en el marco de la Promoción. De encontrar algún comportamiento irregular, la solicitud o la condición podrá ser calificada como inválida y DiDi se encontrará facultado a limitar el uso de la aplicación al Socio Conductor, y excluir, incluso desde el inicio, la participación en la Promoción.DiDi se reserva el derecho de cancelar la entrega de las recompensas de la Promoción ante cualquier tipo de sospecha de irregularidad, abuso de derecho o mala fe por parte del Socio Conductor.\nEl Socio Conductor entiende que los requisitos aquí establecidos son sólo para obtener las recompensas de la presente Promoción y que su participación en ella es totalmente voluntaria. En consecuencia, el Socio Conductor reconoce que es libre de seguir utilizando la Aplicación fuera de la Promoción, para realizar sus viajes con la frecuencia y en los horarios que éste libremente determine.\nEn caso se requiera como requisito de elegibilidad para participar de la Promoción, se entenderá por Tasa de Aceptación la relación entre la cantidad de solicitudes de viajes aceptadas por el Socio Conductor sobre la cantidad de solicitudes de viajes recibidas, menos las solicitudes de viajes excluidas. Los casos en que se supere el límite de tiempo para responder a una solicitud de viaje, o bien se rechace una solicitud de viaje por el Socio Conductor, se considerarán como solicitudes de viaje recibidas y no aceptadas, para efectos de calcular la Tasa de Aceptación.\nUn viaje no se considerará como “rechazado” si el Socio Conductor lo cancela antes de que finalice el tiempo indicado en la aplicación DiDi Conductor, o cuando el Socio Conductor no pueda aceptar una solicitud por un error de red, o cuando el viaje sea desde o hacia una zona de riesgo (según lo que muestre la aplicación).\nSe hace presente que los requisitos específicos relativos a la Tasa de Aceptación operan sólo para esta Promoción. Cada Socio Conductor es libre de participar o no de la Promoción, y siempre podrá, si así lo desea, utilizar la aplicación DiDi Conductor sin participar de la Promoción.\nEl proceso de verificación y validación de los viajes que realice DiDi puede durar hasta treinta (30) días calendario y las recompensas a ser depositadas por DiDi podrán estar sujetas a variaciones de conformidad con el proceso de verificación y los presentes Términos y Condiciones.\nLa renuncia a las recompensas ofrecidas por DiDi en esta Promoción, cualquiera que sea la razón que la motive, o su expiración por vencimiento de su vigencia, no dará derecho al Socio Conductor a ningún tipo de compensación. Bajo ninguna circunstancia será canjeable por bienes de otra índole.\nDiDi asume absoluta responsabilidad únicamente en las actividades que le corresponden de conformidad a las mecánicas anteriormente descritas, siempre y cuando se encuentre especificada en estos Términos y Condiciones. DiDi no será responsable bajo ninguna circunstancia por los daños y perjuicios que pudiera ocasionar la recompensa recibida, ni los que eventualmente se generarán a cualquier Socio Conductor por su participación en la Promoción.\nCaso Fortuito o Fuerza Mayor: En caso de que se presente un evento de caso fortuito o fuerza mayor que afecte el desarrollo de la Promoción, DiDi podrá suspender definitivamente el cumplimiento de sus obligaciones, y no incurrirá en incumplimiento de los Términos y Condiciones; lo anterior, en el entendido que DiDi realizará su mejor esfuerzo para resolver dicha causa y mitigar las pérdidas. Caso fortuito o fuerza mayor significa cualquier causa impredecible e inevitable (aun cuando sea previsible) fuera del control de DiDi que impida, afecte o demore el cumplimiento de cualquiera de sus obligaciones conforme a la Promoción. Dichas causas incluyen, sin limitación, terremotos, guerra, modificación de las leyes, reglamentos y políticas gubernamentales, virus de cómputo, ataques de hackers o suspensión de servicios prestados por empresas de telecomunicaciones.\nToda cuestión que en virtud de estos Términos y Condiciones se genere entre cualquier Socio Conductor y DiDi, será derivado a y definitivamente resuelto mediante arbitraje administrado por el Centro de Arbitraje Internacional de Singapur (“CAIS”) de acuerdo a las Reglas de Arbitraje del CAIS vigentes en el momento del arbitraje, reglas que se consideran incorporadas por referencia en esta cláusula. El número de árbitros será uno. La sede, o lugar legal, del arbitraje será Singapur. El idioma que se utilizará en el procedimiento arbitral será el inglés. La decisión del árbitro será definitiva y vinculante para las Partes, salvo en caso de error manifiesto. Los costos del árbitro serán soportados por igual entre las Partes o según lo indique el árbitro. El Socio Conductor renuncia expresa e irrevocablemente a su derecho de someter la disputa a los tribunales o tribunales arbitrales de cualquier otra jurisdicción.\nDe manera supletoria a estos Términos y Condiciones, a los participantes de la presente Promoción le serán aplicables también los Términos y Condiciones de Uso de DiDi Conductor que estén vigentes durante la relación entre DiDi y el Socio Conductor.\nEn caso exista algún inconveniente, el Conductor podrá remitir sus dudas y consultas a través de la aplicación de DiDi Conductor, en la opción “Ayuda”.\nDemás Términos y Condiciones se encuentran aquí: https://d.didiglobal.com/cZ6HmL\n\n© 2024 DiDi\n@GLN",
+    "push1_send_time": "2026-08-22 06:00",
+    "push1_audience": "Drivers participating in the event",
+    "push1_content": "Realiza viajes y genera S/. {{maximum_total_amount}} EXTRA!\n\nVálido durante {{campaign_time}} ",
+    "push2_send_time": "",
+    "push2_audience": "",
+    "push2_content": ""
+  }
+};
+
 const CITY_INFO_STORAGE_KEY = 'dxgy_calc_city_info_v1';
 const DEFAULT_CITY_INFO = {
   '56513800': { name: 'Valparaiso', currency: 'CLP', hour_offset: -12 },
@@ -431,6 +537,7 @@ function rebuildCityInfoFromTable() {
   saveCityInfo();
   // If the currently loaded trips' city was just (re)configured, refresh the auto-filled fields.
   if (DETECTED_CITY && CITY_INFO[DETECTED_CITY]) applyCityInfoToForm(DETECTED_CITY);
+  updateMagellanCityDisplay();
 }
 
 function applyCityInfoToForm(cityId) {
@@ -482,8 +589,268 @@ document.getElementById('cityModalOverlay').addEventListener('click', (e) => {
   if (e.target.id === 'cityModalOverlay') closeCityModal();
 });
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') closeCityModal();
+  if (e.key === 'Escape') { closeCityModal(); closeCartModal(); }
 });
+
+// ---------- Magellan upload cart ----------
+const MAGELLAN_COLUMNS = [
+  'Event Purpose', 'City', 'Driver Type', 'Event Type', 'Trigger Type', 'Budget Department', 'Budget',
+  'Selection/Purchase Period', 'Reward Period', 'Event Period/Task Validity Period', 'Target Group',
+  'Ratio of Control Group', 'Request Type', 'AR & CR Calculation Type', 'AR', 'CR', 'Star Rating', 'Geofence',
+  'Event Rules', 'Title', 'Notes', 'Comments', 'Push1_Send Time', 'Push1_Send push to specified driver(s)',
+  'Push1_Content', 'Push2_Send Time', 'Push2_Send push to specified driver(s)', 'Push2_Content',
+  'SMS1_Send Time', 'SMS1_Send push to specified driver(s)', 'SMS1_Content', 'SMS2_Send Time',
+  'SMS2_Send push to specified driver(s)', 'SMS2_Content', 'Courier Type', 'Order Statistics Scope',
+  'Driver Level', 'Order Challenge Level', 'Exclusive Rewards for High-Level Drivers',
+  'Successful Delivery Bag Check Days',
+];
+const MAGELLAN_EVENT_TYPE = { dxgy: 'RealtimeDxGyReward', guarantee: 'GuaranteeReward', multiplier: 'Multiplier' };
+const MAGELLAN_TYPE_LABEL = { dxgy: 'DxGy', guarantee: 'Garantizado', multiplier: 'Multiplier' };
+const CART_STORAGE_KEY = 'dxgy_calc_magellan_cart_v1';
+
+// City for the Magellan cart is never independently picked — it always mirrors the city
+// detected from the uploaded trips file, so a cart item can't accidentally target the wrong city.
+function updateMagellanCityDisplay() {
+  const el = document.getElementById('magellanCityVal');
+  if (!DETECTED_CITY) { el.textContent = '- (sube trips primero)'; return; }
+  const info = CITY_INFO[DETECTED_CITY];
+  el.textContent = (info && info.name ? info.name : DETECTED_CITY) + ` (${DETECTED_CITY})`;
+}
+
+function refreshEventPeriodField() {
+  const hourRanges = [...document.querySelectorAll('#rangeTbody tr')].map(tr => [
+    parseInt(tr.querySelector('.range-start').value) || 0,
+    parseInt(tr.querySelector('.range-end').value) || 0,
+  ]);
+  document.getElementById('eventPeriodInput').value = formatEventPeriod(hourRanges);
+}
+document.getElementById('refreshEventPeriodBtn').addEventListener('click', refreshEventPeriodField);
+
+function toMagellanDateTime(datetimeLocalValue) {
+  return datetimeLocalValue ? datetimeLocalValue.replace('T', ' ') : '';
+}
+
+function refreshPush1SendTimeDefault() {
+  const boilerplate = MAGELLAN_BOILERPLATE[INCENTIVE_TYPE];
+  const raw = boilerplate.push1_send_time || '';
+  document.getElementById('push1SendTimeInput').value = raw.replace(' ', 'T');
+}
+
+function formatRewardPeriod() {
+  const start = document.getElementById('rewardPeriodStartInput').value;
+  const end = document.getElementById('rewardPeriodEndInput').value;
+  if (!start) return '';
+  if (!end || end === start) return start;
+  return `${start}~${end}`;
+}
+
+function formatEventPeriod(hourRanges) {
+  return hourRanges.map(([s, e]) => `${pad2(s)}:00-${pad2(e)}:59`).join(',');
+}
+
+// Matches the exact format documented in the Magellan template's "explain" sheet
+// (Event type rule-example section) for each event type.
+function formatEventRules(incentiveType, tiers) {
+  const currency = document.getElementById('currencyInput').value || '';
+  if (incentiveType === 'guarantee') {
+    const sorted = [...tiers].sort((a, b) => a.min_trips - b.min_trips);
+    return sorted.map((t, i) => `Tier${i + 1}: ${t.min_trips}Trips*Guarantee${t.reward}${currency} `).join(',');
+  }
+  if (incentiveType === 'multiplier') {
+    const sorted = [...tiers].sort((a, b) => a.trips - b.trips);
+    return sorted.map((t, i) => `Tier${i + 1}: ${t.trips}Trips*${t.pct}%ASP*Cap${t.cap}${currency} `).join(',');
+  }
+  const sorted = [...tiers].sort((a, b) => a.min_trips - b.min_trips);
+  return sorted.map((t, i) => `Tier${i + 1}: ${t.min_trips}Trips*${t.reward}${currency} `).join(',');
+}
+
+function buildMagellanRow(item) {
+  const b = MAGELLAN_BOILERPLATE[item.incentiveType];
+  const map = {
+    'Event Purpose': 'Active DRV',
+    'City': item.city,
+    'Driver Type': b.driver_type,
+    'Event Type': MAGELLAN_EVENT_TYPE[item.incentiveType],
+    'Trigger Type': 'Trip',
+    'Budget Department': 'Engage-Cityops',
+    'Budget': 1,
+    'Selection/Purchase Period': '',
+    'Reward Period': item.rewardPeriod,
+    'Event Period/Task Validity Period': item.eventPeriod,
+    'Target Group': item.targetGroup,
+    'Ratio of Control Group': item.ratioOfControl,
+    'Request Type': b.request_type,
+    'AR & CR Calculation Type': '',
+    'AR': '',
+    'CR': '',
+    'Star Rating': b.star_rating,
+    'Geofence': '',
+    'Event Rules': item.eventRules,
+    'Title': b.title,
+    'Notes': b.notes,
+    'Comments': '',
+    'Push1_Send Time': item.push1SendTime,
+    'Push1_Send push to specified driver(s)': b.push1_audience,
+    'Push1_Content': b.push1_content,
+    'Push2_Send Time': b.push2_send_time,
+    'Push2_Send push to specified driver(s)': b.push2_audience,
+    'Push2_Content': b.push2_content,
+    'SMS1_Send Time': '', 'SMS1_Send push to specified driver(s)': '', 'SMS1_Content': '',
+    'SMS2_Send Time': '', 'SMS2_Send push to specified driver(s)': '', 'SMS2_Content': '',
+    'Courier Type': '', 'Order Statistics Scope': '', 'Driver Level': '', 'Order Challenge Level': '',
+    'Exclusive Rewards for High-Level Drivers': '', 'Successful Delivery Bag Check Days': '',
+  };
+  return MAGELLAN_COLUMNS.map(c => map[c] ?? '');
+}
+
+// Same three-way tier read used by the forecast calc (runCalculation), reused here so the
+// cart always reflects exactly what's configured on screen.
+function collectCurrentTiers() {
+  if (INCENTIVE_TYPE === 'guarantee') {
+    return [...document.querySelectorAll('#guaranteeTierTbody tr')].map(tr => ({
+      min_trips: parseFloat(tr.querySelector('.guarantee-tier-min').value) || 0,
+      reward: parseFloat(tr.querySelector('.guarantee-tier-amount').value) || 0,
+    }));
+  }
+  if (INCENTIVE_TYPE === 'multiplier') {
+    return [...document.querySelectorAll('#multiplierTierTbody tr')].map(tr => ({
+      trips: parseFloat(tr.querySelector('.multiplier-tier-trips').value) || 0,
+      pct: parseFloat(tr.querySelector('.multiplier-tier-pct').value) || 0,
+      cap: parseFloat(tr.querySelector('.multiplier-tier-cap').value) || 0,
+    }));
+  }
+  return [...document.querySelectorAll('#tierTbody tr')].map(tr => ({
+    min_trips: parseFloat(tr.querySelector('.tier-min').value) || 0,
+    reward: parseFloat(tr.querySelector('.tier-reward').value) || 0,
+  }));
+}
+
+let CART = [];
+try {
+  const savedCart = JSON.parse(localStorage.getItem(CART_STORAGE_KEY));
+  if (Array.isArray(savedCart)) CART = savedCart;
+} catch (e) { /* ignore corrupt storage */ }
+
+function saveCart() {
+  try { localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(CART)); } catch (e) { /* non-fatal */ }
+}
+
+function updateCartCount() {
+  document.getElementById('cartCount').textContent = CART.length;
+}
+
+function renderCart() {
+  const tbody = document.getElementById('cartTbody');
+  tbody.innerHTML = '';
+  document.getElementById('cartEmptyMsg').style.display = CART.length ? 'none' : '';
+  CART.forEach((item, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="checkbox-cell"><button type="button" class="secondary cart-remove-btn" data-idx="${i}" style="padding:4px 10px; margin:0;">✕</button></td>
+      <td>${MAGELLAN_TYPE_LABEL[item.incentiveType]}</td>
+      <td>${item.city}</td>
+      <td>${item.eventType}</td>
+      <td>${item.rewardPeriod}</td>
+      <td>${item.eventPeriod}</td>
+      <td>${item.push1SendTime}</td>
+      <td>${item.targetGroup}</td>
+      <td style="text-align:left; font-size:11px;">${item.eventRules}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+  tbody.querySelectorAll('.cart-remove-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      CART.splice(parseInt(btn.dataset.idx), 1);
+      saveCart();
+      renderCart();
+      updateCartCount();
+    });
+  });
+  updateCartCount();
+}
+
+document.getElementById('addToCartBtn').addEventListener('click', () => {
+  const cityId = DETECTED_CITY;
+  const cityInfo = cityId ? CITY_INFO[cityId] : null;
+  const rewardPeriod = formatRewardPeriod();
+  const targetGroup = document.getElementById('targetGroupInput').value.trim();
+  const ratioOfControl = parseFloat(document.getElementById('ratioControlInput').value) || 0;
+  const eventPeriod = document.getElementById('eventPeriodInput').value.trim();
+  const push1SendTime = toMagellanDateTime(document.getElementById('push1SendTimeInput').value);
+  const tiers = collectCurrentTiers();
+
+  if (!cityId) {
+    document.getElementById('cartAddStatus').innerHTML = '<span class="error">Sube un archivo de trips primero para detectar la ciudad.</span>';
+    return;
+  }
+  if (!rewardPeriod) {
+    document.getElementById('cartAddStatus').innerHTML = '<span class="error">Falta la fecha de inicio del Reward Period.</span>';
+    return;
+  }
+  if (!targetGroup) {
+    document.getElementById('cartAddStatus').innerHTML = '<span class="error">Falta el Target Group (DTAC ID).</span>';
+    return;
+  }
+  if (!eventPeriod) {
+    document.getElementById('cartAddStatus').innerHTML = '<span class="error">Falta el Event Period/Task Validity Period.</span>';
+    return;
+  }
+  if (!push1SendTime) {
+    document.getElementById('cartAddStatus').innerHTML = '<span class="error">Falta el Push1_Send Time.</span>';
+    return;
+  }
+  if (!tiers.length || tiers.every(t => !(t.min_trips || t.trips))) {
+    document.getElementById('cartAddStatus').innerHTML = '<span class="error">Configura al menos un tier con trips &gt; 0.</span>';
+    return;
+  }
+
+  CART.push({
+    incentiveType: INCENTIVE_TYPE,
+    city: (cityInfo && cityInfo.name) || cityId,
+    eventType: MAGELLAN_EVENT_TYPE[INCENTIVE_TYPE],
+    rewardPeriod,
+    eventPeriod,
+    targetGroup,
+    ratioOfControl,
+    push1SendTime,
+    eventRules: formatEventRules(INCENTIVE_TYPE, tiers),
+  });
+  saveCart();
+  renderCart();
+  document.getElementById('cartAddStatus').textContent = `Agregado al carrito (${CART.length} en total).`;
+});
+
+document.getElementById('clearCartBtn').addEventListener('click', () => {
+  if (!CART.length) return;
+  CART = [];
+  saveCart();
+  renderCart();
+});
+
+document.getElementById('downloadCartBtn').addEventListener('click', () => {
+  if (!CART.length) {
+    document.getElementById('cartEmptyMsg').style.display = '';
+    return;
+  }
+  const aoa = [MAGELLAN_COLUMNS, ...CART.map(buildMagellanRow)];
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+  const stamp = new Date().toISOString().slice(0, 10);
+  XLSX.writeFile(wb, `magellan_batch_config_${stamp}.xlsx`);
+});
+
+// ---------- Cart modal ----------
+function openCartModal() { renderCart(); document.getElementById('cartModalOverlay').classList.add('open'); }
+function closeCartModal() { document.getElementById('cartModalOverlay').classList.remove('open'); }
+document.getElementById('openCartModalBtn').addEventListener('click', openCartModal);
+document.getElementById('closeCartModalBtn').addEventListener('click', closeCartModal);
+document.getElementById('cartModalOverlay').addEventListener('click', (e) => {
+  if (e.target.id === 'cartModalOverlay') closeCartModal();
+});
+
+updateMagellanCityDisplay();
+updateCartCount();
 
 // ---------- Pyodide setup ----------
 async function initPyodide() {
@@ -855,6 +1222,7 @@ document.getElementById('tripsInput').addEventListener('change', async (e) => {
     document.getElementById('snapshotRefInput').max = dmax;
 
     applyCityInfoToForm(DETECTED_CITY);
+    updateMagellanCityDisplay();
     if (!CITY_INFO[DETECTED_CITY]) {
       // Unknown city: seed a row in the city table with the detected ID and open the modal
       // so Juan notices and fills in name/currency/offset once — remembered for every future run.
@@ -992,6 +1360,7 @@ document.querySelectorAll('#incentiveTypeSwitch .switch-btn').forEach(btn => {
     document.getElementById('payoutModeRow').style.display = INCENTIVE_TYPE === 'dxgy' ? '' : 'none';
     document.getElementById('guaranteeNote').style.display = INCENTIVE_TYPE === 'guarantee' ? '' : 'none';
     document.getElementById('multiplierNote').style.display = INCENTIVE_TYPE === 'multiplier' ? '' : 'none';
+    refreshPush1SendTimeDefault();
   });
 });
 
@@ -1026,6 +1395,9 @@ addGuaranteeTierRow(20, 80000);
 // Defaults matching Juan's Multiplier example (9 trips -> 20% cap 12; +4 trips -> 30% cap 12)
 addMultiplierTierRow(9, 20, 12);
 addMultiplierTierRow(13, 30, 12);
+
+refreshEventPeriodField();
+refreshPush1SendTimeDefault();
 
 // ---------- Calculation ----------
 document.getElementById('calcBtn').addEventListener('click', runCalculation);
