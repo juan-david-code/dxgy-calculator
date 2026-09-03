@@ -193,8 +193,8 @@
 </head>
 <body>
 <div class="wrap">
+  <h1 class="title">Calculadora de incentivos</h1>
   <div class="top-bar-row">
-    <h1 class="title" style="flex:1; margin-bottom:0;">Calculadora de incentivos</h1>
     <button type="button" id="openCartModalBtn" class="secondary city-gear-btn">🛒 Carrito Magellan (<span id="cartCount">0</span>)</button>
     <button type="button" id="openTncModalBtn" class="secondary city-gear-btn">📄 T&amp;Cs por ciudad</button>
     <button type="button" id="openCityModalBtn" class="secondary city-gear-btn">⚙ Ciudades</button>
@@ -202,6 +202,15 @@
 
   <div class="panel">
     <div class="black-bar">1. CARGA DE ARCHIVOS</div>
+
+    <div class="row-inline" style="margin-bottom:16px;">
+      <label>Modo de targeteo</label>
+      <div class="switch-group" id="targetModeSwitch">
+        <button type="button" class="switch-btn active" data-mode="cohort">Cohort</button>
+        <button type="button" class="switch-btn" data-mode="list">Lista de DRV IDs</button>
+      </div>
+    </div>
+
     <div class="cols2">
       <div>
         <div class="row-inline"><label>Trips por hora</label>
@@ -209,11 +218,17 @@
         </div>
         <div id="tripsStatus" class="meta-line">Sube uno o varios archivos: date, hour, drv_id, city, trips, earnings</div>
       </div>
-      <div>
+      <div id="cohortUploadWrap">
         <div class="row-inline"><label>Cohort snapshot</label>
           <input type="file" id="cohortInput" accept=".xlsx,.xls,.csv">
         </div>
         <div id="cohortStatus" class="meta-line">Sube un archivo: snapshot_date, drv_id, city, cohort</div>
+      </div>
+      <div id="drvListUploadWrap" style="display:none;">
+        <div class="row-inline"><label>Lista de DRV IDs</label>
+          <input type="file" id="drvListInput" accept=".xlsx,.xls,.csv">
+        </div>
+        <div id="drvListStatus" class="meta-line">Sube un archivo con una sola columna: drv_id. El reporte da un solo total para todos esos drivers, sin desglose por cohort.</div>
       </div>
     </div>
     <div id="pyodideStatus" class="loading">Cargando motor Python (Pyodide)...</div>
@@ -245,7 +260,7 @@
           <input type="text" id="currencyInput" value="" style="width:70px;">
         </div>
       </div>
-      <div class="control-box">
+      <div class="control-box" id="snapshotRefBox">
         <div class="row-inline" style="margin:0;"><label>Snapshot cohort (ref.)</label>
           <input type="date" id="snapshotRefInput" style="width:130px;">
         </div>
@@ -1409,8 +1424,39 @@ function fmtPct(v) {
 }
 
 function refreshCalcButton() {
-  document.getElementById('calcBtn').disabled = !(pyodide && TRIPS_ROWS.length && COHORT_ROWS.length);
+  const targetReady = TARGET_MODE === 'list' ? DRV_LIST_ROWS.length > 0 : COHORT_ROWS.length > 0;
+  document.getElementById('calcBtn').disabled = !(pyodide && TRIPS_ROWS.length && targetReady);
 }
+
+// ---------- Target mode: standard cohort snapshot, or an ad hoc drv_id list ----------
+// A drv_id list is treated internally as one synthetic cohort ("Lista cargada") so it flows
+// through the exact same aggregation/report/cart pipeline as a real cohort file — no separate
+// code path needed downstream.
+let TARGET_MODE = 'cohort';
+let DRV_LIST_ROWS = []; // [{drv_id}]
+const SYNTHETIC_LIST_COHORT_NAME = 'Lista cargada';
+
+function buildSyntheticCohortRows(drvListRows, cityId) {
+  const anyDate = new Date().toISOString().slice(0, 10);
+  return drvListRows.map(r => ({
+    snapshot_date: anyDate,
+    drv_id: r.drv_id,
+    city: cityId,
+    cohort: SYNTHETIC_LIST_COHORT_NAME,
+  }));
+}
+
+document.querySelectorAll('#targetModeSwitch .switch-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    TARGET_MODE = btn.dataset.mode;
+    document.querySelectorAll('#targetModeSwitch .switch-btn').forEach(b => b.classList.toggle('active', b === btn));
+    const isList = TARGET_MODE === 'list';
+    document.getElementById('cohortUploadWrap').style.display = isList ? 'none' : '';
+    document.getElementById('drvListUploadWrap').style.display = isList ? '' : 'none';
+    document.getElementById('snapshotRefBox').style.display = isList ? 'none' : '';
+    refreshCalcButton();
+  });
+});
 
 // ---------- Date filter (constrained to whatever dates the uploaded trips actually span) ----------
 function buildDateCheckboxes(dates) {
@@ -1532,6 +1578,34 @@ document.getElementById('cohortInput').addEventListener('change', async (e) => {
   } catch (err) {
     COHORT_ROWS = [];
     document.getElementById('cohortStatus').innerHTML = `<span class="error">Error: ${err.message}</span>`;
+  }
+  refreshCalcButton();
+});
+
+// ---------- File loading: ad hoc drv_id list (target mode "list") ----------
+document.getElementById('drvListInput').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  document.getElementById('drvListStatus').textContent = 'Leyendo archivo...';
+  try {
+    const required = ['drv_id'];
+    const aoa = await parseWorkbookAOA(file);
+    const built = buildRowsFromAOA(aoa, required);
+    const missing = findMissingCols(built.headerRow, required);
+    if (missing.length) throw new Error(`Faltan columnas: ${missing.join(', ')} (columnas detectadas: ${built.headerRow.filter(h => h).join(', ') || 'ninguna'})`);
+
+    const rows = mapRowsSafe(built.rows, r => ({
+      drv_id: String(getField(r, 'drv_id')),
+    })).filter(r => r.drv_id && r.drv_id !== 'null' && r.drv_id !== 'undefined');
+
+    const uniqueIds = [...new Set(rows.map(r => r.drv_id))];
+    DRV_LIST_ROWS = uniqueIds.map(drv_id => ({ drv_id }));
+
+    document.getElementById('drvListStatus').textContent =
+      `Cargados ${DRV_LIST_ROWS.length.toLocaleString()} drv_id únicos.`;
+  } catch (err) {
+    DRV_LIST_ROWS = [];
+    document.getElementById('drvListStatus').innerHTML = `<span class="error">Error: ${err.message}</span>`;
   }
   refreshCalcButton();
 });
@@ -1668,7 +1742,8 @@ refreshPush1ContentDefault();
 document.getElementById('calcBtn').addEventListener('click', runCalculation);
 
 async function runCalculation() {
-  if (!pyodide || !TRIPS_ROWS.length || !COHORT_ROWS.length) return;
+  const targetReady = TARGET_MODE === 'list' ? DRV_LIST_ROWS.length > 0 : COHORT_ROWS.length > 0;
+  if (!pyodide || !TRIPS_ROWS.length || !targetReady) return;
 
   const selectedDates = getSelectedDates();
   if (!selectedDates.length) {
@@ -1705,12 +1780,15 @@ async function runCalculation() {
   const snapshotRef = document.getElementById('snapshotRefInput').value;
   const incrementality = parseFloat(document.getElementById('incrementalityInput').value) || 1;
   const currency = document.getElementById('currencyInput').value || '';
+  const effectiveCohortRows = TARGET_MODE === 'list'
+    ? buildSyntheticCohortRows(DRV_LIST_ROWS, DETECTED_CITY)
+    : COHORT_ROWS;
 
   try {
     const fn = pyodide.globals.get('run_dxgy_pipeline');
     const resultJson = fn(
       JSON.stringify(TRIPS_ROWS),
-      JSON.stringify(COHORT_ROWS),
+      JSON.stringify(effectiveCohortRows),
       DETECTED_CITY,
       hourOffset,
       snapshotRef,
