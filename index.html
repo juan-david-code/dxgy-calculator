@@ -6,6 +6,8 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧮</text></svg>">
 <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+<script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
@@ -357,9 +359,7 @@
       </div>
       <div class="control-box">
         <div class="row-inline" style="margin:0;"><label>Reward Period</label>
-          <input type="date" id="rewardPeriodStartInput" style="width:130px;">
-          <span class="muted">a</span>
-          <input type="date" id="rewardPeriodEndInput" style="width:130px;">
+          <input type="text" id="rewardPeriodRangeInput" style="width:190px;" placeholder="Elige el rango">
         </div>
       </div>
       <div class="control-box">
@@ -378,10 +378,31 @@
       <input type="text" id="eventPeriodInput" style="width:220px;" placeholder="00:00-23:59">
       <button type="button" id="refreshEventPeriodBtn" class="secondary">↺ Recalcular desde franjas horarias</button>
     </div>
+    <div class="section-label">Push notifications</div>
     <div class="row-inline">
       <label>Push1_Send Time</label>
-      <input type="datetime-local" id="push1SendTimeInput" style="width:200px;">
+      <input type="text" id="push1SendTimeInput" style="width:190px;" placeholder="YYYY-MM-DD HH:MM">
     </div>
+    <div class="row-inline" style="align-items:flex-start;">
+      <label style="margin-top:7px;">Push1_Content</label>
+      <textarea id="push1ContentInput" style="width:100%; max-width:520px; min-height:70px; font-family:inherit; font-size:12.5px; padding:8px 10px; border:1.5px solid var(--line); border-radius:var(--radius-sm); resize:vertical;"></textarea>
+    </div>
+
+    <div class="add-remove">
+      <button type="button" id="addPush2Btn" class="secondary">+ Push 2</button>
+      <button type="button" id="removePush2Btn" class="secondary" style="display:none;">- Quitar Push 2</button>
+    </div>
+    <div id="push2Wrap" style="display:none;">
+      <div class="row-inline">
+        <label>Push2_Send Time</label>
+        <input type="text" id="push2SendTimeInput" style="width:190px;" placeholder="YYYY-MM-DD HH:MM">
+      </div>
+      <div class="row-inline" style="align-items:flex-start;">
+        <label style="margin-top:7px;">Push2_Content</label>
+        <textarea id="push2ContentInput" style="width:100%; max-width:520px; min-height:70px; font-family:inherit; font-size:12.5px; padding:8px 10px; border:1.5px solid var(--line); border-radius:var(--radius-sm); resize:vertical;"></textarea>
+      </div>
+    </div>
+
     <div class="row-inline">
       <label>Remark (cohort)</label>
       <input type="text" id="remarkInput" style="width:120px;" placeholder="@LYH">
@@ -681,22 +702,94 @@ function refreshEventPeriodField() {
 }
 document.getElementById('refreshEventPeriodBtn').addEventListener('click', refreshEventPeriodField);
 
-function toMagellanDateTime(datetimeLocalValue) {
-  return datetimeLocalValue ? datetimeLocalValue.replace('T', ' ') : '';
+// Push1_Send Time: a flatpickr date+time field (same look as the other text inputs), always
+// defaulting to TODAY's date — only the time-of-day comes from the incentive type's example
+// (06:00 for DxGy/Multiplier, 13:00 for Guarantee) since that hour-of-day pattern is still
+// a reasonable default, but the example's hardcoded date is not.
+let push1SendTimePicker = null;
+function initPush1SendTimePicker() {
+  push1SendTimePicker = flatpickr('#push1SendTimeInput', {
+    enableTime: true,
+    dateFormat: 'Y-m-d H:i',
+    time_24hr: true,
+  });
+}
+
+// Builds a "today at HH:MM" Date from an example's "YYYY-MM-DD HH:MM" time-of-day.
+function todayAtTimeOf(exampleDateTime, fallbackTime) {
+  const timePart = (exampleDateTime || '').split(' ')[1] || fallbackTime;
+  const [hh, mm] = timePart.split(':').map(Number);
+  const d = new Date();
+  d.setHours(hh || 0, mm || 0, 0, 0);
+  return d;
 }
 
 function refreshPush1SendTimeDefault() {
   const boilerplate = MAGELLAN_BOILERPLATE[INCENTIVE_TYPE];
-  const raw = boilerplate.push1_send_time || '';
-  document.getElementById('push1SendTimeInput').value = raw.replace(' ', 'T');
+  push1SendTimePicker.setDate(todayAtTimeOf(boilerplate.push1_send_time, '06:00'), true);
+}
+
+function refreshPush1ContentDefault() {
+  document.getElementById('push1ContentInput').value = MAGELLAN_BOILERPLATE[INCENTIVE_TYPE].push1_content || '';
+}
+
+// Push 2 is optional — off by default, added/removed like a tier or hour-range row. When shown,
+// it defaults from the incentive type's example (only Guarantee has a real Push2 example; DxGy
+// and Multiplier default to an empty, ready-to-write block at a sensible 06:00 today).
+let push2SendTimePicker = null;
+function initPush2SendTimePicker() {
+  push2SendTimePicker = flatpickr('#push2SendTimeInput', {
+    enableTime: true,
+    dateFormat: 'Y-m-d H:i',
+    time_24hr: true,
+  });
+}
+
+function refreshPush2Defaults() {
+  const boilerplate = MAGELLAN_BOILERPLATE[INCENTIVE_TYPE];
+  push2SendTimePicker.setDate(todayAtTimeOf(boilerplate.push2_send_time, '06:00'), true);
+  document.getElementById('push2ContentInput').value = boilerplate.push2_content || '';
+}
+
+function isPush2Enabled() {
+  return document.getElementById('push2Wrap').style.display !== 'none';
+}
+
+document.getElementById('addPush2Btn').addEventListener('click', () => {
+  document.getElementById('push2Wrap').style.display = '';
+  document.getElementById('addPush2Btn').style.display = 'none';
+  document.getElementById('removePush2Btn').style.display = '';
+  refreshPush2Defaults();
+});
+document.getElementById('removePush2Btn').addEventListener('click', () => {
+  document.getElementById('push2Wrap').style.display = 'none';
+  document.getElementById('addPush2Btn').style.display = '';
+  document.getElementById('removePush2Btn').style.display = 'none';
+  push2SendTimePicker.clear();
+  document.getElementById('push2ContentInput').value = '';
+});
+
+// Single-field range calendar: click a start date, click an end date, the days between get
+// highlighted. Reads directly from the flatpickr instance's selectedDates rather than parsing
+// the visible text, since flatpickr's display format can differ from the ISO format Magellan needs.
+let rewardPeriodPicker = null;
+function initRewardPeriodPicker() {
+  rewardPeriodPicker = flatpickr('#rewardPeriodRangeInput', {
+    mode: 'range',
+    dateFormat: 'Y-m-d',
+    altInput: true,
+    altFormat: 'Y-m-d',
+    locale: { rangeSeparator: ' -> ' },
+  });
 }
 
 function formatRewardPeriod() {
-  const start = document.getElementById('rewardPeriodStartInput').value;
-  const end = document.getElementById('rewardPeriodEndInput').value;
-  if (!start) return '';
-  if (!end || end === start) return start;
-  return `${start}~${end}`;
+  if (!rewardPeriodPicker) return '';
+  const dates = rewardPeriodPicker.selectedDates;
+  if (!dates.length) return '';
+  const fmt = d => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  if (dates.length === 1) return fmt(dates[0]);
+  return `${fmt(dates[0])}~${fmt(dates[1])}`;
 }
 
 function formatEventPeriod(hourRanges) {
@@ -704,9 +797,11 @@ function formatEventPeriod(hourRanges) {
 }
 
 // Matches the exact format documented in the Magellan template's "explain" sheet
-// (Event type rule-example section) for each event type.
+// (Event type rule-example section) for each event type. Magellan's Event Rules always use a
+// literal "$" here regardless of the city's real currency (CLP, S/, etc.) — that's how the
+// Lima example is written and how Magellan expects it, not the local currency symbol.
 function formatEventRules(incentiveType, tiers) {
-  const currency = document.getElementById('currencyInput').value || '';
+  const currency = '$';
   if (incentiveType === 'guarantee') {
     const sorted = [...tiers].sort((a, b) => a.min_trips - b.min_trips);
     return sorted.map((t, i) => `Tier${i + 1}: ${t.min_trips}Trips*Guarantee${t.reward}${currency} `).join(',');
@@ -749,10 +844,10 @@ function buildMagellanRow(item) {
     'Comments': '',
     'Push1_Send Time': item.push1SendTime,
     'Push1_Send push to specified driver(s)': b.push1_audience,
-    'Push1_Content': b.push1_content,
-    'Push2_Send Time': b.push2_send_time,
-    'Push2_Send push to specified driver(s)': b.push2_audience,
-    'Push2_Content': b.push2_content,
+    'Push1_Content': item.push1Content,
+    'Push2_Send Time': item.push2SendTime || '',
+    'Push2_Send push to specified driver(s)': item.push2SendTime ? (b.push2_audience || b.push1_audience) : '',
+    'Push2_Content': item.push2Content || '',
     'SMS1_Send Time': '', 'SMS1_Send push to specified driver(s)': '', 'SMS1_Content': '',
     'SMS2_Send Time': '', 'SMS2_Send push to specified driver(s)': '', 'SMS2_Content': '',
     'Courier Type': '', 'Order Statistics Scope': '', 'Driver Level': '', 'Order Challenge Level': '',
@@ -893,7 +988,11 @@ document.getElementById('addToCartBtn').addEventListener('click', () => {
   const targetGroup = document.getElementById('targetGroupInput').value.trim();
   const ratioOfControl = parseFloat(document.getElementById('ratioControlInput').value) || 0;
   const eventPeriod = document.getElementById('eventPeriodInput').value.trim();
-  const push1SendTime = toMagellanDateTime(document.getElementById('push1SendTimeInput').value);
+  const push1SendTime = document.getElementById('push1SendTimeInput').value.trim();
+  const push1Content = document.getElementById('push1ContentInput').value;
+  const push2Enabled = isPush2Enabled();
+  const push2SendTime = push2Enabled ? document.getElementById('push2SendTimeInput').value.trim() : '';
+  const push2Content = push2Enabled ? document.getElementById('push2ContentInput').value : '';
   const remark = document.getElementById('remarkInput').value.trim();
   const tiers = collectCurrentTiers();
 
@@ -921,6 +1020,10 @@ document.getElementById('addToCartBtn').addEventListener('click', () => {
     document.getElementById('cartAddStatus').innerHTML = '<span class="error">Configura al menos un tier con trips &gt; 0.</span>';
     return;
   }
+  if (push2Enabled && (!push2SendTime || !push2Content.trim())) {
+    document.getElementById('cartAddStatus').innerHTML = '<span class="error">Agregaste Push 2 pero le falta el Send Time o el contenido — complétalo o dale "Quitar Push 2".</span>';
+    return;
+  }
 
   CART.push({
     incentiveType: INCENTIVE_TYPE,
@@ -932,6 +1035,9 @@ document.getElementById('addToCartBtn').addEventListener('click', () => {
     targetGroup,
     ratioOfControl,
     push1SendTime,
+    push1Content,
+    push2SendTime,
+    push2Content,
     remark,
     eventRules: formatEventRules(INCENTIVE_TYPE, tiers),
   });
@@ -958,6 +1064,11 @@ document.getElementById('downloadCartBtn').addEventListener('click', () => {
   XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
   const stamp = new Date().toISOString().slice(0, 10);
   XLSX.writeFile(wb, `magellan_batch_config_${stamp}.xlsx`);
+
+  CART = [];
+  saveCart();
+  renderCart();
+  document.getElementById('cartAddStatus').textContent = 'Plantilla descargada y carrito vaciado.';
 });
 
 // ---------- Cart modal ----------
@@ -1010,6 +1121,9 @@ document.getElementById('resetTncBtn').addEventListener('click', () => {
 
 updateMagellanCityDisplay();
 updateCartCount();
+initRewardPeriodPicker();
+initPush1SendTimePicker();
+initPush2SendTimePicker();
 
 // ---------- Pyodide setup ----------
 async function initPyodide() {
@@ -1509,6 +1623,8 @@ document.querySelectorAll('#incentiveTypeSwitch .switch-btn').forEach(btn => {
     document.getElementById('guaranteeTierWrap').style.display = INCENTIVE_TYPE === 'guarantee' ? '' : 'none';
     document.getElementById('multiplierTierWrap').style.display = INCENTIVE_TYPE === 'multiplier' ? '' : 'none';
     refreshPush1SendTimeDefault();
+    refreshPush1ContentDefault();
+    if (isPush2Enabled()) refreshPush2Defaults();
   });
 });
 
@@ -1546,6 +1662,7 @@ addMultiplierTierRow(13, 30, 12);
 
 refreshEventPeriodField();
 refreshPush1SendTimeDefault();
+refreshPush1ContentDefault();
 
 // ---------- Calculation ----------
 document.getElementById('calcBtn').addEventListener('click', runCalculation);
