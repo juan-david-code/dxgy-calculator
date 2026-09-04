@@ -440,7 +440,7 @@
       <button id="removeCityBtn" class="secondary">- Ciudad</button>
     </div>
     <table id="cityTable">
-      <thead><tr><th>City ID</th><th>Nombre</th><th>Moneda</th><th>Corrección de hora</th></tr></thead>
+      <thead><tr><th>City ID</th><th>Nombre</th><th>Moneda</th><th>Símbolo Magellan</th><th>Corrección de hora</th></tr></thead>
       <tbody id="cityTbody"></tbody>
     </table>
   </div>
@@ -550,16 +550,34 @@ const MAGELLAN_BOILERPLATE = {
 
 const CITY_INFO_STORAGE_KEY = 'dxgy_calc_city_info_v1';
 const DEFAULT_CITY_INFO = {
-  '56513800': { name: 'Valparaiso', currency: 'CLP', hour_offset: -12 },
-  '51541300': { name: 'Lima', currency: 'S/', hour_offset: -13 },
+  '56513800': { name: 'Valparaiso', currency: 'CLP', hour_offset: -12, magellan_symbol: '$' },
+  '51541300': { name: 'Lima', currency: 'S/', hour_offset: -13, magellan_symbol: 'S/' },
 };
 
+// Magellan's Event Rules field needs a currency SYMBOL (e.g. "$", "S/"), which isn't always
+// the same as the display currency code (Chile shows costs in "CLP" but Magellan wants "$").
+// Older saved city configs (or freshly added cities) won't have magellan_symbol yet — backfill
+// it from the currency field when that already looks like a symbol (short / has a non-letter
+// character, like "S/"), otherwise default to "$" since that covers most LatAm currencies.
+function guessMagellanSymbol(currency) {
+  const c = (currency || '').trim();
+  if (!c) return '$';
+  if (c.length <= 2 || /[^A-Za-z]/.test(c)) return c;
+  return '$';
+}
+
 function loadCityInfo() {
+  let data;
   try {
     const saved = JSON.parse(localStorage.getItem(CITY_INFO_STORAGE_KEY));
-    if (saved && typeof saved === 'object' && Object.keys(saved).length) return saved;
-  } catch (e) { /* ignore corrupt storage, fall back to defaults */ }
-  return { ...DEFAULT_CITY_INFO };
+    data = (saved && typeof saved === 'object' && Object.keys(saved).length) ? saved : { ...DEFAULT_CITY_INFO };
+  } catch (e) {
+    data = { ...DEFAULT_CITY_INFO };
+  }
+  Object.values(data).forEach(info => {
+    if (!info.magellan_symbol) info.magellan_symbol = guessMagellanSymbol(info.currency);
+  });
+  return data;
 }
 
 let CITY_INFO = loadCityInfo();
@@ -576,6 +594,7 @@ function rebuildCityInfoFromTable() {
     next[id] = {
       name: tr.querySelector('.city-name').value.trim(),
       currency: tr.querySelector('.city-currency').value.trim(),
+      magellan_symbol: tr.querySelector('.city-magellan-symbol').value.trim() || '$',
       hour_offset: parseInt(tr.querySelector('.city-offset').value) || 0,
     };
   });
@@ -593,13 +612,14 @@ function applyCityInfoToForm(cityId) {
   document.getElementById('currencyInput').value = info ? info.currency : '';
 }
 
-function addCityRow(id, name, currency, hourOffset) {
+function addCityRow(id, name, currency, hourOffset, magellanSymbol) {
   const tbody = document.getElementById('cityTbody');
   const tr = document.createElement('tr');
   tr.innerHTML = `
     <td><input type="text" class="city-id city-input" value="${id ?? ''}" placeholder="51541300"></td>
     <td><input type="text" class="city-name city-input" value="${name ?? ''}" placeholder="Lima"></td>
     <td><input type="text" class="city-currency city-input" value="${currency ?? ''}" placeholder="S/" style="width:70px;"></td>
+    <td><input type="text" class="city-magellan-symbol city-input" value="${magellanSymbol ?? '$'}" placeholder="$" style="width:60px;"></td>
     <td><input type="number" class="city-offset" value="${hourOffset ?? 0}" step="1" style="width:70px;"></td>
   `;
   tbody.appendChild(tr);
@@ -619,7 +639,7 @@ function renderCityTable() {
   tbody.innerHTML = '';
   const entries = Object.entries(CITY_INFO);
   if (!entries.length) { addCityRow(); return; }
-  entries.forEach(([id, info]) => addCityRow(id, info.name, info.currency, info.hour_offset));
+  entries.forEach(([id, info]) => addCityRow(id, info.name, info.currency, info.hour_offset, info.magellan_symbol));
 }
 
 document.getElementById('addCityBtn').addEventListener('click', () => { addCityRow(); });
@@ -812,11 +832,12 @@ function formatEventPeriod(hourRanges) {
 }
 
 // Matches the exact format documented in the Magellan template's "explain" sheet
-// (Event type rule-example section) for each event type. Magellan's Event Rules always use a
-// literal "$" here regardless of the city's real currency (CLP, S/, etc.) — that's how the
-// Lima example is written and how Magellan expects it, not the local currency symbol.
+// (Event type rule-example section) for each event type. Uses the city's configured Magellan
+// symbol (⚙ Ciudades), which is NOT always the same as the display currency code — e.g. Chile
+// shows costs in "CLP" but Magellan expects "$", while Lima's real symbol "S/" is used as-is.
 function formatEventRules(incentiveType, tiers) {
-  const currency = '$';
+  const cityInfo = CITY_INFO[DETECTED_CITY];
+  const currency = (cityInfo && cityInfo.magellan_symbol) || '$';
   if (incentiveType === 'guarantee') {
     const sorted = [...tiers].sort((a, b) => a.min_trips - b.min_trips);
     return sorted.map((t, i) => `Tier${i + 1}: ${t.min_trips}Trips*Guarantee${t.reward}${currency} `).join(',');
