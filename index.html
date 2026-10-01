@@ -788,8 +788,10 @@ function refreshEventPeriodField() {
     parseInt(tr.querySelector('.range-end').value) || 0,
   ]);
   document.getElementById('eventPeriodInput').value = formatEventPeriod(hourRanges);
+  refreshPush1SendTimeDefault();
 }
 document.getElementById('refreshEventPeriodBtn').addEventListener('click', refreshEventPeriodField);
+document.getElementById('eventPeriodInput').addEventListener('input', () => refreshPush1SendTimeDefault());
 
 // Push1_Send Time: a flatpickr date+time field (same look as the other text inputs), always
 // defaulting to TODAY's date — only the time-of-day comes from the incentive type's example
@@ -813,9 +815,37 @@ function todayAtTimeOf(exampleDateTime, fallbackTime) {
   return d;
 }
 
-function refreshPush1SendTimeDefault() {
+// Earliest start hour across all configured Event Period ranges (e.g. "00:00-23:59,14:00-18:00"
+// -> 0), used to anchor the Push1_Send Time default one hour before the campaign actually opens.
+function earliestEventPeriodStartHour(eventPeriodStr) {
+  if (!eventPeriodStr) return null;
+  const starts = eventPeriodStr.split(',')
+    .map(r => parseInt((r.split('-')[0] || '').split(':')[0], 10))
+    .filter(n => !isNaN(n));
+  return starts.length ? Math.min(...starts) : null;
+}
+
+// Push1_Send Time default: the first day of the Reward Period, one hour before the Event
+// Period's earliest start hour (Date's own hour rollover handles a 00:00 start by moving to
+// 23:00 the day before). Falls back to today at the incentive type's example time when the
+// Reward Period or Event Period isn't set yet.
+function computePush1SendTimeDefault() {
   const boilerplate = MAGELLAN_BOILERPLATE[INCENTIVE_TYPE];
-  push1SendTimePicker.setDate(todayAtTimeOf(boilerplate.push1_send_time, '06:00'), true);
+  const rewardStart = (rewardPeriodPicker && rewardPeriodPicker.selectedDates.length)
+    ? rewardPeriodPicker.selectedDates[0] : null;
+  const startHour = earliestEventPeriodStartHour(document.getElementById('eventPeriodInput').value.trim());
+
+  if (rewardStart && startHour !== null) {
+    const date = new Date(rewardStart);
+    date.setHours(startHour, 0, 0, 0);
+    date.setHours(date.getHours() - 1);
+    return date;
+  }
+  return todayAtTimeOf(boilerplate.push1_send_time, '06:00');
+}
+
+function refreshPush1SendTimeDefault() {
+  push1SendTimePicker.setDate(computePush1SendTimeDefault(), true);
 }
 
 function refreshPush1ContentDefault() {
@@ -869,6 +899,7 @@ function initRewardPeriodPicker() {
     altInput: true,
     altFormat: 'Y-m-d',
     locale: { rangeSeparator: ' -> ' },
+    onChange: () => refreshPush1SendTimeDefault(),
   });
 }
 
