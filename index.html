@@ -146,6 +146,15 @@
     color: var(--ink); display: flex; align-items: center; gap: 8px;
     margin: 4px 0 10px 0;
   }
+  .spinner {
+    width: 14px; height: 14px; border-radius: 50%; display: inline-block;
+    border: 2px solid rgba(255, 107, 0, 0.25); border-top-color: var(--orange);
+    animation: optspin 0.8s linear infinite;
+  }
+  @keyframes optspin { to { transform: rotate(360deg); } }
+  .opt-progress-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; margin: 8px 0 6px; }
+  .opt-progress-track { height: 6px; border-radius: 999px; background: rgba(255, 107, 0, 0.14); overflow: hidden; max-width: 360px; }
+  .opt-progress-bar { height: 100%; width: 0; background: var(--orange); border-radius: 999px; transition: width 0.15s linear; }
   .metric-cell { position: relative; }
   .metric-tags {
     position: absolute; left: calc(50% + 52px); top: 50%; transform: translateY(-50%);
@@ -320,6 +329,7 @@
         <thead><tr><th>#</th><th>Min. trips</th><th>Reward</th></tr></thead>
         <tbody id="tierTbody"></tbody>
       </table>
+      <div class="meta-line" style="margin-top:8px;">Suma total del reward de todos los tiers: <b id="tierRewardTotal">0</b></div>
     </div>
 
     <div id="guaranteeTierWrap" style="display:none;">
@@ -377,6 +387,14 @@
     </div>
 
     <button type="button" id="optimizeBtn" class="secondary">🎯 Sugerir configuración</button>
+    <div id="optProgress" style="display:none;">
+      <div class="opt-progress-row">
+        <span class="spinner"></span>
+        <span id="optProgressLabel">Preparando datos...</span>
+        <span id="optProgressPct" class="muted"></span>
+      </div>
+      <div class="opt-progress-track"><div id="optProgressBar" class="opt-progress-bar"></div></div>
+    </div>
     <div id="optStatus" class="meta-line"></div>
 
     <div id="optResultBox" class="panel" style="display:none; margin-top:12px; box-shadow:none; border-color:var(--orange);">
@@ -387,6 +405,9 @@
       </table>
       <div class="row-inline">
         <span class="muted">Costo proyectado con esta sugerencia: <b id="optProjectedCost">-</b></span>
+      </div>
+      <div class="row-inline" id="optRewardSumRow">
+        <span class="muted">Suma total del reward de todos los tiers: <b id="optRewardSum">-</b></span>
       </div>
       <button type="button" id="applyOptBtn" style="margin-top:10px;">Aplicar tiers sugeridos</button>
     </div>
@@ -677,6 +698,7 @@ function applyCityInfoToForm(cityId) {
   const info = CITY_INFO[cityId];
   document.getElementById('cityVal').textContent = cityId + (info && info.name ? ` (${info.name})` : ' (no configurada)');
   document.getElementById('currencyInput').value = info ? info.currency : '';
+  refreshTierMetrics();
 }
 
 function addCityRow(id, name, currency, hourOffset, magellanSymbol) {
@@ -1441,6 +1463,62 @@ def get_trip_percentiles(trips_json, cohort_json, city, hour_offset, snapshot_re
         'cohorts_in_scope': sorted(per_drv['cohort'].unique().tolist()),
         'meta': meta,
     })
+
+
+# Budget-optimizer fast path: the expensive part (parsing trips, merging cohorts, grouping per
+# driver) happens ONCE in opt_prepare; every candidate-tier evaluation afterwards (dozens per
+# optimization) is just vectorized numpy over the cached per-driver arrays in opt_cost. Payout
+# rules mirror run_dxgy_pipeline exactly.
+_OPT = {}
+
+def opt_prepare(trips_json, cohort_json, city, hour_offset, snapshot_ref_date,
+                hour_ranges_json, selected_dates_json, incrementality_factor):
+    built = _build_per_drv(trips_json, cohort_json, city, hour_offset, snapshot_ref_date,
+                            hour_ranges_json, selected_dates_json)
+    if isinstance(built, str):
+        return json.dumps({"error": built})
+    per_drv, cohort_snapshot, meta = built
+
+    if per_drv.empty or per_drv['total_trips'].sum() == 0:
+        return json.dumps({"error": "No hay drivers con trips en el rango configurado."})
+
+    trips = per_drv['total_trips'].to_numpy(dtype=float)
+    earn = per_drv['total_earnings'].to_numpy(dtype=float)
+    _OPT['projected'] = np.floor(trips * float(incrementality_factor)).astype(np.int64)
+    _OPT['earnings'] = earn
+    _OPT['avg_earnings'] = np.where(trips > 0, earn / np.where(trips > 0, trips, 1.0), 0.0)
+
+    total_trips_sum = float(trips.sum())
+    return json.dumps({
+        'n_drv': int(len(per_drv)),
+        'percentiles': {p: float(per_drv['total_trips'].quantile(p / 100)) for p in (50, 65, 80, 90)},
+        'avg_earnings_per_trip': (float(earn.sum()) / total_trips_sum) if total_trips_sum > 0 else 0.0,
+        'cohorts_in_scope': sorted(per_drv['cohort'].unique().tolist()),
+        'meta': meta,
+    })
+
+
+def opt_cost(tiers_json, incentive_type):
+    tiers = json.loads(tiers_json)
+    n = _OPT['projected']
+    if incentive_type == 'guarantee':
+        amount = np.zeros(len(n))
+        for t in sorted(tiers, key=lambda t: t['min_trips']):
+            amount = np.where(n >= t['min_trips'], float(t['reward']), amount)
+        payout = np.clip(amount - _OPT['earnings'], 0, None)
+    elif incentive_type == 'multiplier':
+        payout = np.zeros(len(n))
+        prev_trips = 0
+        for t in sorted(tiers, key=lambda t: t['trips']):
+            band_earnings = _OPT['avg_earnings'] * (t['trips'] - prev_trips)
+            tier_pay = np.minimum((t['pct'] / 100.0) * band_earnings, float(t['cap']))
+            payout = payout + np.where(n >= t['trips'], tier_pay, 0.0)
+            prev_trips = t['trips']
+    else:
+        payout = np.zeros(len(n))
+        for t in sorted(tiers, key=lambda t: t['min_trips']):
+            payout = payout + np.where(n >= t['min_trips'], float(t['reward']), 0.0)
+    return float(payout.sum())
 `);
 }
 
@@ -1907,6 +1985,11 @@ function setMetricTag(cell, key, cls, text) {
 
 function refreshTierMetrics() {
   const hours = franjaHoursCovered();
+  const totalEl = document.getElementById('tierRewardTotal');
+  if (totalEl) {
+    const sum = [...document.querySelectorAll('#tierTbody .tier-reward')].reduce((a, i) => a + (parseFloat(i.value) || 0), 0);
+    totalEl.textContent = fmtMoney(sum) + ' ' + (document.getElementById('currencyInput').value || '');
+  }
   const rows = [...document.querySelectorAll('#tierTbody tr')].map(tr => ({
     tr,
     trips: parseFloat(tr.querySelector('.tier-min').value) || 0,
@@ -1928,7 +2011,7 @@ function refreshTierMetrics() {
   });
 }
 document.addEventListener('input', (e) => {
-  if (e.target.closest && e.target.closest('#rangeTbody, #tierTbody')) {
+  if (e.target.closest && e.target.closest('#rangeTbody, #tierTbody, #currencyInput')) {
     refreshTierMetrics();
   }
 });
@@ -2111,13 +2194,14 @@ function buildScaledTiers(type, thresholds, k) {
 }
 
 // ---------- DxGy: RPT-floor-aware engine ----------
-// Marginal "reward per incremental trip" rates, deliberately increasing tier to tier (1, 1.25,
-// 1.5, ...) relative to the floor — each additional tier must be a little richer per trip than
-// the last, never flatter, so the incentive keeps pulling drivers forward instead of fizzling
-// out at the top. rates[0] === 1 ties tier 1's RPT exactly to rptFloor * k.
+// Marginal "reward per incremental trip" (RPT) multipliers relative to tier 1. Each tier's RPT
+// is 1.5x the previous one — the middle of the healthy 1.25x-2x window: not flat (<=1.25x gives
+// drivers no reason to keep going) and not explosive (>2x makes the tier almost unreachable and
+// burns budget without converting). rates[0] === 1 ties tier 1's RPT exactly to rptFloor * k.
+const RPT_STEP_MIN = 1.25, RPT_STEP_MAX = 2, RPT_STEP_TARGET = 1.5;
 function dxgyRates(n) {
   const rates = [];
-  for (let i = 0; i < n; i++) rates.push(1 + i * 0.25);
+  for (let i = 0; i < n; i++) rates.push(Math.pow(RPT_STEP_TARGET, i));
   return rates;
 }
 
@@ -2151,24 +2235,24 @@ function scaleThresholdsUp(baseThresholds, d) {
 //   the floor (k=1) and instead the trip thresholds are raised — fewer drivers qualify — until
 //   cost comes back under budget. This is exactly "sube la dificultad" instead of cutting reward
 //   below what makes the incentive worth chasing.
-function solveDxGyWithFloor(baseThresholds, budget, ctx, rptFloor) {
+async function solveDxGyWithFloor(baseThresholds, budget, ctx, rptFloor) {
   const rates = dxgyRates(baseThresholds.length);
   const floorTiers = buildDxGyTiers(baseThresholds, rates, rptFloor, 1);
-  const floorResult = costForTiers(floorTiers, ctx);
+  const floorResult = await costForTiers(floorTiers, ctx);
 
   if (floorResult.total <= budget) {
     let lo = 1, hi = 2;
-    let hiResult = costForTiers(buildDxGyTiers(baseThresholds, rates, rptFloor, hi), ctx);
+    let hiResult = await costForTiers(buildDxGyTiers(baseThresholds, rates, rptFloor, hi), ctx);
     let guard = 0;
     while (hiResult.total < budget && guard < 40) {
       hi *= 2;
-      hiResult = costForTiers(buildDxGyTiers(baseThresholds, rates, rptFloor, hi), ctx);
+      hiResult = await costForTiers(buildDxGyTiers(baseThresholds, rates, rptFloor, hi), ctx);
       guard++;
     }
     let bestK = 1, bestResult = floorResult;
     for (let i = 0; i < 25; i++) {
       const mid = (lo + hi) / 2;
-      const midResult = costForTiers(buildDxGyTiers(baseThresholds, rates, rptFloor, mid), ctx);
+      const midResult = await costForTiers(buildDxGyTiers(baseThresholds, rates, rptFloor, mid), ctx);
       if (midResult.total <= budget) { lo = mid; bestK = mid; bestResult = midResult; }
       else { hi = mid; }
     }
@@ -2177,19 +2261,19 @@ function solveDxGyWithFloor(baseThresholds, budget, ctx, rptFloor) {
 
   let lo = 1, hi = 2;
   let hiThresholds = scaleThresholdsUp(baseThresholds, hi);
-  let hiResult = costForTiers(buildDxGyTiers(hiThresholds, rates, rptFloor, 1), ctx);
+  let hiResult = await costForTiers(buildDxGyTiers(hiThresholds, rates, rptFloor, 1), ctx);
   let guard = 0;
   while (hiResult.total > budget && guard < 40) {
     hi *= 2;
     hiThresholds = scaleThresholdsUp(baseThresholds, hi);
-    hiResult = costForTiers(buildDxGyTiers(hiThresholds, rates, rptFloor, 1), ctx);
+    hiResult = await costForTiers(buildDxGyTiers(hiThresholds, rates, rptFloor, 1), ctx);
     guard++;
   }
   let bestThresholds = hiThresholds, bestResult = hiResult;
   for (let i = 0; i < 25; i++) {
     const mid = (lo + hi) / 2;
     const midThresholds = scaleThresholdsUp(baseThresholds, mid);
-    const midResult = costForTiers(buildDxGyTiers(midThresholds, rates, rptFloor, 1), ctx);
+    const midResult = await costForTiers(buildDxGyTiers(midThresholds, rates, rptFloor, 1), ctx);
     if (midResult.total <= budget) { hi = mid; bestThresholds = midThresholds; bestResult = midResult; }
     else { lo = mid; }
   }
@@ -2198,58 +2282,61 @@ function solveDxGyWithFloor(baseThresholds, budget, ctx, rptFloor) {
 
 // Rounds DOWN to clean numbers (never up, so cost can't grow past what's budget-safe already)
 // while still GUARANTEEING: (a) no reward is 0, (b) tier 1 never drops below rptFloor per trip,
-// (c) reward-per-incremental-trip strictly increases tier to tier. The floor/monotonic bumps
-// below only ever push a value UP from its rounded-down figure, and only when the rounding
-// would otherwise violate one of these hard constraints.
+// (c) from tier 2 on, RPT is 1.25x-2x the previous tier's (checked on the FINAL rounded numbers).
+// Rounding can nudge a ratio out of that window, so each tier is clamped back into it: a value
+// that is too flat is raised just enough, one that is too steep is lowered (which only saves
+// budget).
 function finalizeDxGyTiers(rawTiers, rates, rptFloor) {
   let prevThreshold = 0;
   let prevRpt = 0;
   return rawTiers.map((t, i) => {
     const gap = t.min_trips - prevThreshold;
-    const minReward = Math.max(1, Math.ceil(rptFloor * rates[i] * gap));
-    let reward = Math.max(roundNiceFloor(t.reward), minReward);
-    let rpt = gap > 0 ? reward / gap : reward;
-    if (rpt <= prevRpt) {
-      reward = Math.max(reward, Math.ceil(prevRpt * gap) + 1);
-      rpt = gap > 0 ? reward / gap : reward;
+    let reward = roundNiceFloor(t.reward);
+    if (i === 0) {
+      reward = Math.max(reward, Math.max(1, Math.ceil(rptFloor * gap)));
+    } else {
+      const lo = Math.ceil(RPT_STEP_MIN * prevRpt * gap + 1e-9);
+      const hi = Math.floor(RPT_STEP_MAX * prevRpt * gap + 1e-9);
+      reward = Math.max(reward, lo);
+      if (hi >= lo) reward = Math.min(reward, hi);
     }
+    reward = Math.max(1, reward);
     prevThreshold = t.min_trips;
-    prevRpt = rpt;
+    prevRpt = gap > 0 ? reward / gap : reward;
     return { min_trips: t.min_trips, reward };
   });
 }
 
-function costForTiers(tiers, ctx) {
-  const fn = pyodide.globals.get('run_dxgy_pipeline');
-  const resultJson = fn(
-    JSON.stringify(TRIPS_ROWS),
-    JSON.stringify(ctx.effectiveCohortRows),
-    DETECTED_CITY,
-    ctx.hourOffset,
-    ctx.snapshotRef,
-    JSON.stringify(ctx.hourRanges),
-    JSON.stringify(tiers),
-    ctx.incrementality,
-    JSON.stringify(ctx.selectedDates),
-    ctx.incentiveType
-  );
-  const result = JSON.parse(resultJson);
+// Progress + cooperative yielding: every candidate evaluation is only milliseconds now, but the
+// loop runs dozens of them, so hand control back to the browser periodically — that keeps the
+// page responsive (no "page not responding") and lets the progress bar repaint.
+const OPT_PROGRESS = { steps: 0, expected: 60 };
+function renderOptProgress() {
+  const pct = Math.min(95, Math.round((OPT_PROGRESS.steps / OPT_PROGRESS.expected) * 100));
+  document.getElementById('optProgressBar').style.width = pct + '%';
+  document.getElementById('optProgressPct').textContent = pct + '%';
+}
+const nextFrame = () => new Promise(r => setTimeout(r, 0));
+
+async function costForTiers(tiers, ctx) {
+  const fn = pyodide.globals.get('opt_cost');
+  const total = fn(JSON.stringify(tiers), ctx.incentiveType);
   fn.destroy();
-  if (result.error) throw new Error(result.error);
-  const total = result.report.reduce((s, r) => s + (r.total_cost || 0), 0);
-  return { total, report: result.report };
+  OPT_PROGRESS.steps++;
+  if (OPT_PROGRESS.steps % 3 === 0) { renderOptProgress(); await nextFrame(); }
+  return { total };
 }
 
 // Finds k such that cost(tiers scaled by k) ≈ budget: bracket by doubling, then bisect.
 // Cost is monotonically non-decreasing in k for all three incentive types (more reward money
 // per tier never lowers total payout), so this always converges.
-function solveForBudget(type, thresholds, budget, ctx) {
+async function solveForBudget(type, thresholds, budget, ctx) {
   let lo = 0, hi = 1;
-  let hiResult = costForTiers(buildScaledTiers(type, thresholds, hi), ctx);
+  let hiResult = await costForTiers(buildScaledTiers(type, thresholds, hi), ctx);
   let guard = 0;
   while (hiResult.total < budget && guard < 40) {
     hi *= 2;
-    hiResult = costForTiers(buildScaledTiers(type, thresholds, hi), ctx);
+    hiResult = await costForTiers(buildScaledTiers(type, thresholds, hi), ctx);
     guard++;
   }
   let bestTiers = buildScaledTiers(type, thresholds, hi);
@@ -2257,7 +2344,7 @@ function solveForBudget(type, thresholds, budget, ctx) {
   for (let i = 0; i < 25; i++) {
     const mid = (lo + hi) / 2;
     const midTiers = buildScaledTiers(type, thresholds, mid);
-    const midResult = costForTiers(midTiers, ctx);
+    const midResult = await costForTiers(midTiers, ctx);
     if (midResult.total <= budget) {
       lo = mid; bestTiers = midTiers; bestResult = midResult;
     } else {
@@ -2267,7 +2354,7 @@ function solveForBudget(type, thresholds, budget, ctx) {
   return { tiers: bestTiers, ...bestResult };
 }
 
-document.getElementById('optimizeBtn').addEventListener('click', () => {
+document.getElementById('optimizeBtn').addEventListener('click', async () => {
   const targetReady = TARGET_MODE === 'list' ? DRV_LIST_ROWS.length > 0 : COHORT_ROWS.length > 0;
   if (!pyodide || !TRIPS_ROWS.length || !targetReady) {
     document.getElementById('optStatus').innerHTML = '<span class="error">Sube trips y cohort/lista primero.</span>';
@@ -2290,8 +2377,18 @@ document.getElementById('optimizeBtn').addEventListener('click', () => {
     return;
   }
 
-  document.getElementById('optStatus').textContent = 'Calculando sugerencia...';
+  document.getElementById('optStatus').textContent = '';
   document.getElementById('optResultBox').style.display = 'none';
+  const optBtn = document.getElementById('optimizeBtn');
+  optBtn.disabled = true;
+  OPT_PROGRESS.steps = 0;
+  OPT_PROGRESS.expected = 60;
+  document.getElementById('optProgressLabel').textContent = 'Preparando datos...';
+  document.getElementById('optProgressPct').textContent = '';
+  document.getElementById('optProgressBar').style.width = '4%';
+  document.getElementById('optProgress').style.display = '';
+  // Let the browser paint the spinner before the first (blocking) Python call starts.
+  await new Promise(r => requestAnimationFrame(() => setTimeout(r, 30)));
 
   try {
     const hourRanges = [...document.querySelectorAll('#rangeTbody tr')].map(tr => [
@@ -2313,10 +2410,10 @@ document.getElementById('optimizeBtn').addEventListener('click', () => {
       ? fullCohortRows.filter(r => targetCohortNames.includes(r.cohort))
       : fullCohortRows;
 
-    const pctFn = pyodide.globals.get('get_trip_percentiles');
+    const pctFn = pyodide.globals.get('opt_prepare');
     const pctJson = pctFn(
       JSON.stringify(TRIPS_ROWS), JSON.stringify(effectiveCohortRows), DETECTED_CITY,
-      hourOffset, snapshotRef, JSON.stringify(hourRanges), JSON.stringify(selectedDates)
+      hourOffset, snapshotRef, JSON.stringify(hourRanges), JSON.stringify(selectedDates), incrementality
     );
     pctFn.destroy();
     const pctResult = JSON.parse(pctJson);
@@ -2329,7 +2426,10 @@ document.getElementById('optimizeBtn').addEventListener('click', () => {
     const nTiers = INCENTIVE_TYPE === 'multiplier' ? 2 : 3;
     const thresholds = thresholdsFromBase(pctResult.percentiles[50], nTiers);
 
-    const ctx = { hourOffset, snapshotRef, hourRanges, incrementality, selectedDates, effectiveCohortRows, incentiveType: INCENTIVE_TYPE };
+    const ctx = { incentiveType: INCENTIVE_TYPE };
+    document.getElementById('optProgressLabel').textContent = 'Calibrando presupuesto...';
+    renderOptProgress();
+    await nextFrame();
 
     // Round DOWN to clean numbers a person would actually type (20.3 -> 20, 1475 -> 1400), then
     // recompute the real cost for those rounded values to confirm — this is what guarantees the
@@ -2338,21 +2438,21 @@ document.getElementById('optimizeBtn').addEventListener('click', () => {
     let roundedTiers;
     let dxgyMode = null;
     if (INCENTIVE_TYPE === 'multiplier') {
-      const solvedRaw = solveForBudget(INCENTIVE_TYPE, thresholds, budget, ctx);
+      const solvedRaw = await solveForBudget(INCENTIVE_TYPE, thresholds, budget, ctx);
       roundedTiers = solvedRaw.tiers.map(t => ({ trips: t.trips, pct: Math.max(1, Math.floor(t.pct)), cap: roundNiceFloor(t.cap) }));
     } else if (INCENTIVE_TYPE === 'dxgy') {
       const rptFloor = Math.max(0, parseFloat(document.getElementById('optRptFloorInput').value) || 0);
-      const solvedRaw = solveDxGyWithFloor(thresholds, budget, ctx, rptFloor);
+      const solvedRaw = await solveDxGyWithFloor(thresholds, budget, ctx, rptFloor);
       dxgyMode = solvedRaw.mode;
       // finalizeDxGyTiers only ever ROUNDS DOWN or bumps up the strict minimum needed to hold
       // the floor/monotonic-RPT constraints — in the rare case that minimum itself exceeds
       // budget, it's reported honestly below rather than silently hidden.
       roundedTiers = finalizeDxGyTiers(solvedRaw.rawTiers, solvedRaw.rates, rptFloor);
     } else {
-      const solvedRaw = solveForBudget(INCENTIVE_TYPE, thresholds, budget, ctx);
+      const solvedRaw = await solveForBudget(INCENTIVE_TYPE, thresholds, budget, ctx);
       roundedTiers = solvedRaw.tiers.map(t => ({ min_trips: t.min_trips, reward: roundNiceFloor(t.reward) }));
     }
-    const finalResult = costForTiers(roundedTiers, ctx);
+    const finalResult = await costForTiers(roundedTiers, ctx);
 
     const theadRow = document.getElementById('optTiersTheadRow');
     const tbody = document.getElementById('optTiersTbody');
@@ -2367,6 +2467,9 @@ document.getElementById('optimizeBtn').addEventListener('click', () => {
       tbody.innerHTML = roundedTiers.map((t, i) => `<tr><td>${i + 1}</td><td>${t.min_trips}</td><td>${fmtMoney(t.reward)} ${currency}</td></tr>`).join('');
     }
     document.getElementById('optProjectedCost').textContent = `${fmtMoney(finalResult.total)} ${currency} (objetivo: ${fmtMoney(budget)} ${currency})`;
+    const rewardSumRow = document.getElementById('optRewardSumRow');
+    rewardSumRow.style.display = INCENTIVE_TYPE === 'dxgy' ? '' : 'none';
+    document.getElementById('optRewardSum').textContent = `${fmtMoney(roundedTiers.reduce((a, t) => a + (t.reward || 0), 0))} ${currency}`;
     document.getElementById('optResultBox').style.display = '';
     document.getElementById('optResultBox').dataset.tiers = JSON.stringify(roundedTiers);
     document.getElementById('optResultBox').dataset.suggestedCohorts = JSON.stringify(targetCohortNames);
@@ -2381,6 +2484,9 @@ document.getElementById('optimizeBtn').addEventListener('click', () => {
     document.getElementById('optStatus').textContent = statusMsg;
   } catch (err) {
     document.getElementById('optStatus').innerHTML = `<span class="error">Error: ${err.message}</span>`;
+  } finally {
+    document.getElementById('optProgress').style.display = 'none';
+    optBtn.disabled = false;
   }
 });
 
