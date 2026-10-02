@@ -1735,6 +1735,7 @@ function updateDateFilterSummary() {
   const selected = getSelectedDates().length;
   document.getElementById('dateFilterSummary').textContent =
     total ? `${selected} de ${total} fecha(s) seleccionada(s)` : 'Sube los trips para ver las fechas disponibles.';
+  refreshTierMetrics();
 }
 
 document.getElementById('selectAllDatesBtn').addEventListener('click', () => {
@@ -1946,7 +1947,7 @@ function removeMultiplierTierRow() {
 }
 
 // ---------- Per-tier TPH / RPT tags (DxGy only) ----------
-// TPH = trips asked for in the tier / hours covered by the configured franjas. RPT = what the
+// TPH = trips asked for in the tier / total hours available (franja hours x included days). RPT = what the
 // tier pays per NEW trip it asks for (reward / trips added over the previous tier). From tier 2
 // on, a green tag shows how many times that RPT multiplies the previous tier's RPT.
 function franjaHoursCovered() {
@@ -1984,7 +1985,9 @@ function setMetricTag(cell, key, cls, text) {
 }
 
 function refreshTierMetrics() {
-  const hours = franjaHoursCovered();
+  // Total hours drivers have to hit the tier = franja hours per day x number of included days
+  // (1 when no trips are loaded yet, so the tags still work on a blank page).
+  const hours = franjaHoursCovered() * Math.max(1, getSelectedDates().length);
   const totalEl = document.getElementById('tierRewardTotal');
   if (totalEl) {
     const sum = [...document.querySelectorAll('#tierTbody .tier-reward')].reduce((a, i) => a + (parseFloat(i.value) || 0), 0);
