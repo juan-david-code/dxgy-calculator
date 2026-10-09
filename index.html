@@ -326,10 +326,11 @@
         <button id="removeTierBtn" class="secondary">- Tier</button>
       </div>
       <table id="tierTable">
-        <thead><tr><th>#</th><th>Min. trips</th><th>Reward</th></tr></thead>
+        <thead><tr><th>#</th><th>Trips adicionales</th><th>Reward</th></tr></thead>
         <tbody id="tierTbody"></tbody>
       </table>
       <div class="meta-line" style="margin-top:8px;">Suma total del reward de todos los tiers: <b id="tierRewardTotal">0</b></div>
+      <div class="meta-line">Suma total de trips (acumulados hasta el último tier): <b id="tierTripsTotal">0</b></div>
     </div>
 
     <div id="guaranteeTierWrap" style="display:none;">
@@ -339,7 +340,7 @@
         <button id="removeGuaranteeTierBtn" class="secondary">- Tier</button>
       </div>
       <table id="guaranteeTierTable">
-        <thead><tr><th>#</th><th>Min. trips</th><th>Monto garantizado (total)</th></tr></thead>
+        <thead><tr><th>#</th><th>Trips adicionales</th><th>Monto garantizado (total)</th></tr></thead>
         <tbody id="guaranteeTierTbody"></tbody>
       </table>
     </div>
@@ -351,7 +352,7 @@
         <button id="removeMultiplierTierBtn" class="secondary">- Tier</button>
       </div>
       <table id="multiplierTierTable">
-        <thead><tr><th>#</th><th>Trips (acumulado)</th><th>% Multiplicador</th><th>Cap</th></tr></thead>
+        <thead><tr><th>#</th><th>Trips de la etapa</th><th>% Multiplicador</th><th>Cap</th></tr></thead>
         <tbody id="multiplierTierTbody"></tbody>
       </table>
     </div>
@@ -409,6 +410,9 @@
       <div class="row-inline" id="optRewardSumRow">
         <span class="muted">Suma total del reward de todos los tiers: <b id="optRewardSum">-</b></span>
       </div>
+      <div class="row-inline" id="optTripsSumRow">
+        <span class="muted">Suma total de trips (acumulados hasta el último tier): <b id="optTripsSum">-</b></span>
+      </div>
       <button type="button" id="applyOptBtn" style="margin-top:10px;">Aplicar tiers sugeridos</button>
     </div>
     </div>
@@ -438,7 +442,7 @@
       <thead>
         <tr>
           <th></th><th>Cohort</th><th># drv en cohort</th><th># drv activos</th><th>% activos</th>
-          <th># drv que ganan</th><th>% que ganan</th><th>Costo total</th><th>Costo prom. / ganador</th>
+          <th># drv que ganan</th><th>% que ganan</th><th>% ganan de activos</th><th>Costo total</th><th>Costo prom. / ganador</th>
         </tr>
       </thead>
       <tbody id="reportTbody"></tbody>
@@ -473,6 +477,10 @@
       <label>Event Period / Task Validity Period</label>
       <input type="text" id="eventPeriodInput" style="width:220px;" placeholder="00:00-23:59">
       <button type="button" id="refreshEventPeriodBtn" class="secondary">↺ Recalcular desde franjas horarias</button>
+    </div>
+    <div class="row-inline">
+      <label>Title</label>
+      <input type="text" id="titleInput" style="width:100%; max-width:520px;" placeholder="Genera hasta {{maximum_total_amount}} EXTRA!">
     </div>
     <div class="section-label">Push notifications</div>
     <div class="row-inline">
@@ -618,11 +626,11 @@ const MAGELLAN_BOILERPLATE = {
     "driver_type": "Express",
     "request_type": "Express,Set Your Fare,Rapid",
     "star_rating": "3",
-    "title": "Genera hasta {{maximum_total_amount}} EXTRA!",
+    "title": "Hasta {{max_multiplier}} más ganancias",
     "notes": "¿Quién organiza?\nDiDi Mobility Information Technology Pte. Ltd., sociedad constituida y válidamente existente de acuerdo a las leyes de Singapur, y domiciliada para estos efectos en 111 North Bridge Road #06-20 Peninsula Plaza Singapore (179098), es responsable de y presenta los Términos y Condiciones de la presente promoción (la “Promoción”).\n¿Cómo funciona?\nAl abrir la aplicación DiDi Conductor en la sección \"Premios\" el Socio Conductor (según se define más adelante) encontrará una ventana en donde aparecerá información que complementa estos Términos y Condiciones (la \"Ventana\"). La Promoción será válida durante el periodo denominado \"Periodo de la Promoción\", que aparece en la zona denominada \"Área válida\" en la parte superior de la Ventana para los Socios Conductores registrados y habilitados para conducir en Perú conectados con la aplicación DiDi Conductor en las ciudades donde ésta se encuentre disponible (el “Territorio”).\nPara los efectos de esta promoción, se entenderá por “Socio Conductor” aquella persona que se ha registrado válidamente en la aplicación DiDi Conductor antes o durante el Periodo de la Promoción.\nRequisitos de elegibilidad\nSerán elegibles para participar de la presente Promoción los Socios Conductores que cumplan con las siguientes condiciones:\nHaber recibido una comunicación para participar en la Promoción o que la Promoción se encuentre activa en la aplicación DiDi Conductor utilizando sus credenciales de Socio Conductor; y,De corresponder, aquellos requisitos adicionales que se especifiquen en la Ventana.\nMecánica de la Promoción\nDurante el Periodo de la Promoción, los Socios Conductores que cumplan con los requisitos de elegibilidad y deseen participar de la misma deberán completar los requisitos que se indiquen expresamente en la Ventana para ser acreedores de la recompensa de la Promoción que se indica en la Ventana.\nEn caso de que se requiera completar una cantidad de viajes, únicamente se considerarán para efectos de la Promoción aquellos viajes válidos completados por el Socio Conductor. Se considerarán como viajes válidos aquellos que (i) hayan comenzado y finalizado en la plataforma DiDi Conductor; (ii) cumplan con los demás requisitos para la Promoción señalados en la App, y (ii) cumplan con los Términos y Condiciones de Uso de DiDi Conductor. En caso de revisión de los viajes, el equipo de Soporte podrá tardar hasta 30 días calendario en realizar la verificación.\nLas recompensas producto de esta Promoción serán depositadas en la Billetera del Socio Conductor que haya cumplido con con los requisitos de elegibilidad así como la mecánica de la promoción establecidos en los presentes Términos y Condiciones dentro de los cinco (5) días hábiles después de que complete el objetivo de la Promoción iniciado en la Ventana.\nMiscelaneas\nLa invitación por parte de DiDi a participar de la Promoción es personal e intransferible.DiDi puede modificar estos Términos y Condiciones, así como modificar, suspender, cancelar o prorrogar la Promoción, mediante previa notificación a través de los mismos medios de comunicación que usó para dar a conocer esta Promoción.DiDi tiene el derecho de revisar cada uno de los viajes y demás condiciones de la Promoción para identificar la correcta realización de los mismos en el marco de la Promoción. De encontrar algún comportamiento irregular, la solicitud o la condición podrá ser calificada como inválida y DiDi se encontrará facultado a limitar el uso de la aplicación al Socio Conductor, y excluir, incluso desde el inicio, la participación en la Promoción.DiDi se reserva el derecho de cancelar la entrega de las recompensas de la Promoción ante cualquier tipo de sospecha de irregularidad, abuso de derecho o mala fe por parte del Socio Conductor.\nEl Socio Conductor entiende que los requisitos aquí establecidos son sólo para obtener las recompensas de la presente Promoción y que su participación en ella es totalmente voluntaria. En consecuencia, el Socio Conductor reconoce que es libre de seguir utilizando la Aplicación fuera de la Promoción, para realizar sus viajes con la frecuencia y en los horarios que éste libremente determine.\nEn caso se requiera como requisito de elegibilidad para participar de la Promoción, se entenderá por Tasa de Aceptación la relación entre la cantidad de solicitudes de viajes aceptadas por el Socio Conductor sobre la cantidad de solicitudes de viajes recibidas, menos las solicitudes de viajes excluidas. Los casos en que se supere el límite de tiempo para responder a una solicitud de viaje, o bien se rechace una solicitud de viaje por el Socio Conductor, se considerarán como solicitudes de viaje recibidas y no aceptadas, para efectos de calcular la Tasa de Aceptación.\nUn viaje no se considerará como “rechazado” si el Socio Conductor lo cancela antes de que finalice el tiempo indicado en la aplicación DiDi Conductor, o cuando el Socio Conductor no pueda aceptar una solicitud por un error de red, o cuando el viaje sea desde o hacia una zona de riesgo (según lo que muestre la aplicación).\nSe hace presente que los requisitos específicos relativos a la Tasa de Aceptación operan sólo para esta Promoción. Cada Socio Conductor es libre de participar o no de la Promoción, y siempre podrá, si así lo desea, utilizar la aplicación DiDi Conductor sin participar de la Promoción.\nEl proceso de verificación y validación de los viajes que realice DiDi puede durar hasta treinta (30) días calendario y las recompensas a ser depositadas por DiDi podrán estar sujetas a variaciones de conformidad con el proceso de verificación y los presentes Términos y Condiciones.\nLa renuncia a las recompensas ofrecidas por DiDi en esta Promoción, cualquiera que sea la razón que la motive, o su expiración por vencimiento de su vigencia, no dará derecho al Socio Conductor a ningún tipo de compensación. Bajo ninguna circunstancia será canjeable por bienes de otra índole.\nDiDi asume absoluta responsabilidad únicamente en las actividades que le corresponden de conformidad a las mecánicas anteriormente descritas, siempre y cuando se encuentre especificada en estos Términos y Condiciones. DiDi no será responsable bajo ninguna circunstancia por los daños y perjuicios que pudiera ocasionar la recompensa recibida, ni los que eventualmente se generarán a cualquier Socio Conductor por su participación en la Promoción.\nCaso Fortuito o Fuerza Mayor: En caso de que se presente un evento de caso fortuito o fuerza mayor que afecte el desarrollo de la Promoción, DiDi podrá suspender definitivamente el cumplimiento de sus obligaciones, y no incurrirá en incumplimiento de los Términos y Condiciones; lo anterior, en el entendido que DiDi realizará su mejor esfuerzo para resolver dicha causa y mitigar las pérdidas. Caso fortuito o fuerza mayor significa cualquier causa impredecible e inevitable (aun cuando sea previsible) fuera del control de DiDi que impida, afecte o demore el cumplimiento de cualquiera de sus obligaciones conforme a la Promoción. Dichas causas incluyen, sin limitación, terremotos, guerra, modificación de las leyes, reglamentos y políticas gubernamentales, virus de cómputo, ataques de hackers o suspensión de servicios prestados por empresas de telecomunicaciones.\nToda cuestión que en virtud de estos Términos y Condiciones se genere entre cualquier Socio Conductor y DiDi, será derivado a y definitivamente resuelto mediante arbitraje administrado por el Centro de Arbitraje Internacional de Singapur (“CAIS”) de acuerdo a las Reglas de Arbitraje del CAIS vigentes en el momento del arbitraje, reglas que se consideran incorporadas por referencia en esta cláusula. El número de árbitros será uno. La sede, o lugar legal, del arbitraje será Singapur. El idioma que se utilizará en el procedimiento arbitral será el inglés. La decisión del árbitro será definitiva y vinculante para las Partes, salvo en caso de error manifiesto. Los costos del árbitro serán soportados por igual entre las Partes o según lo indique el árbitro. El Socio Conductor renuncia expresa e irrevocablemente a su derecho de someter la disputa a los tribunales o tribunales arbitrales de cualquier otra jurisdicción.\nDe manera supletoria a estos Términos y Condiciones, a los participantes de la presente Promoción le serán aplicables también los Términos y Condiciones de Uso de DiDi Conductor que estén vigentes durante la relación entre DiDi y el Socio Conductor.\nEn caso exista algún inconveniente, el Conductor podrá remitir sus dudas y consultas a través de la aplicación de DiDi Conductor, en la opción “Ayuda”.\nDemás Términos y Condiciones se encuentran aquí: https://d.didiglobal.com/cZ6HmL\n\n© 2024 DiDi",
     "push1_send_time": "2026-08-22 06:00",
     "push1_audience": "Drivers participating in the event",
-    "push1_content": "Realiza viajes y genera S/. {{maximum_total_amount}} EXTRA!\n\nVálido durante {{campaign_time}} ",
+    "push1_content": "Completa viajes para incrementar tus ganancias hasta un {{max_multiplier}} adicional\nVálido durante {{campaign_time}}",
     "push2_send_time": "",
     "push2_audience": "",
     "push2_content": ""
@@ -883,6 +891,10 @@ function refreshPush1SendTimeDefault() {
   push1SendTimePicker.setDate(computePush1SendTimeDefault(), true);
 }
 
+function refreshTitleDefault() {
+  document.getElementById('titleInput').value = MAGELLAN_BOILERPLATE[INCENTIVE_TYPE].title || '';
+}
+
 function refreshPush1ContentDefault() {
   document.getElementById('push1ContentInput').value = MAGELLAN_BOILERPLATE[INCENTIVE_TYPE].push1_content || '';
 }
@@ -963,7 +975,7 @@ function formatEventRules(incentiveType, tiers) {
     return sorted.map((t, i) => `Tier${i + 1}: ${t.min_trips}Trips*Guarantee${t.reward}${currency} `).join(',');
   }
   if (incentiveType === 'multiplier') {
-    const sorted = [...tiers].sort((a, b) => a.trips - b.trips);
+    const sorted = tiers; // stage order matters (each tier's trips are per stage), so never re-sort
     return sorted.map((t, i) => `Tier${i + 1}: ${t.trips}Trips*${t.pct}%ASP*Cap${t.cap}${currency} `).join(',');
   }
   const sorted = [...tiers].sort((a, b) => a.min_trips - b.min_trips);
@@ -992,7 +1004,7 @@ function buildMagellanRow(item) {
     'Star Rating': b.star_rating,
     'Geofence': '',
     'Event Rules': item.eventRules,
-    'Title': b.title,
+    'Title': item.title ?? b.title,
     'Notes': (() => {
       const notes = getNotesFor(item.cityId, item.incentiveType);
       return item.remark ? `${notes}\n${item.remark}` : notes;
@@ -1014,12 +1026,27 @@ function buildMagellanRow(item) {
 
 // Same three-way tier read used by the forecast calc (runCalculation), reused here so the
 // cart always reflects exactly what's configured on screen.
+// DxGy and Guarantee tier tables are DISPLAYED as additional trips per tier (what each tier asks
+// on top of the previous one), but all the math keeps working on cumulative thresholds. These two
+// helpers are the only bridge: read turns the on-screen increments into cumulative min_trips,
+// and incrementFromCumulative turns a cumulative value into the increment to show.
+function readCumulativeTiers(bodySel, minCls, rewardCls) {
+  let cumulative = 0;
+  return [...document.querySelectorAll(bodySel + ' tr')].map(tr => {
+    cumulative += parseFloat(tr.querySelector(minCls).value) || 0;
+    return { min_trips: cumulative, reward: parseFloat(tr.querySelector(rewardCls).value) || 0 };
+  });
+}
+function incrementFromCumulative(bodySel, minCls, cumulative) {
+  if (cumulative === undefined || cumulative === null) return 0;
+  const existing = [...document.querySelectorAll(bodySel + ' ' + minCls)]
+    .reduce((a, i) => a + (parseFloat(i.value) || 0), 0);
+  return cumulative - existing;
+}
+
 function collectCurrentTiers() {
   if (INCENTIVE_TYPE === 'guarantee') {
-    return [...document.querySelectorAll('#guaranteeTierTbody tr')].map(tr => ({
-      min_trips: parseFloat(tr.querySelector('.guarantee-tier-min').value) || 0,
-      reward: parseFloat(tr.querySelector('.guarantee-tier-amount').value) || 0,
-    }));
+    return readCumulativeTiers('#guaranteeTierTbody', '.guarantee-tier-min', '.guarantee-tier-amount');
   }
   if (INCENTIVE_TYPE === 'multiplier') {
     return [...document.querySelectorAll('#multiplierTierTbody tr')].map(tr => ({
@@ -1028,10 +1055,7 @@ function collectCurrentTiers() {
       cap: parseFloat(tr.querySelector('.multiplier-tier-cap').value) || 0,
     }));
   }
-  return [...document.querySelectorAll('#tierTbody tr')].map(tr => ({
-    min_trips: parseFloat(tr.querySelector('.tier-min').value) || 0,
-    reward: parseFloat(tr.querySelector('.tier-reward').value) || 0,
-  }));
+  return readCumulativeTiers('#tierTbody', '.tier-min', '.tier-reward');
 }
 
 // ---------- Remark suggestion (cohort selection -> Magellan T&C tag) ----------
@@ -1146,6 +1170,7 @@ document.getElementById('addToCartBtn').addEventListener('click', () => {
   const eventPeriod = document.getElementById('eventPeriodInput').value.trim();
   const push1SendTime = document.getElementById('push1SendTimeInput').value.trim();
   const push1Content = document.getElementById('push1ContentInput').value;
+  const title = document.getElementById('titleInput').value;
   const push2Enabled = isPush2Enabled();
   const push2SendTime = push2Enabled ? document.getElementById('push2SendTimeInput').value.trim() : '';
   const push2Content = push2Enabled ? document.getElementById('push2ContentInput').value : '';
@@ -1192,6 +1217,7 @@ document.getElementById('addToCartBtn').addEventListener('click', () => {
     ratioOfControl,
     push1SendTime,
     push1Content,
+    title,
     push2SendTime,
     push2Content,
     remark,
@@ -1385,20 +1411,20 @@ def run_dxgy_pipeline(trips_json, cohort_json, city, hour_offset, snapshot_ref_d
             per_drv['payout'] = (per_drv['guarantee_amount'] - per_drv['total_earnings']).clip(lower=0)
 
         elif incentive_type == 'multiplier':
-            sorted_tiers = sorted(tiers, key=lambda t: t['trips'])
-            # Multiplier: each tier only covers the BAND of trips between the previous tier's
-            # threshold and its own (not cumulative from zero). Reaching the tier's threshold
-            # unlocks a % of that band's earnings, capped per tier; earnings-per-trip is
-            # estimated from the driver's own average since we don't have per-trip earnings.
+            # Multiplier: each tier is a STAGE and its trips are the number of trips that stage
+            # needs on its own (Magellan shows "Haz 4 viajes mas" for a second tier of 4), not a
+            # cumulative threshold. Stages unlock in order; completing one pays pct% of the
+            # earnings of THAT stage's trips, capped per stage. Earnings-per-trip is estimated
+            # from the driver's own average since we don't have per-trip earnings.
             def multiplier_payout_for(n, avg_earnings_per_trip):
                 total = 0.0
-                prev_trips = 0
-                for t in sorted_tiers:
-                    if n >= t['trips']:
-                        band_trips = t['trips'] - prev_trips
-                        band_earnings = avg_earnings_per_trip * band_trips
-                        total += min((t['pct'] / 100.0) * band_earnings, t['cap'])
-                    prev_trips = t['trips']
+                completed_trips = 0
+                for t in tiers:
+                    completed_trips += t['trips']
+                    if n < completed_trips:
+                        break
+                    band_earnings = avg_earnings_per_trip * t['trips']
+                    total += min((t['pct'] / 100.0) * band_earnings, t['cap'])
                 return total
 
             avg_earnings = np.where(
@@ -1431,6 +1457,7 @@ def run_dxgy_pipeline(trips_json, cohort_json, city, hour_offset, snapshot_ref_d
     report['n_drv_earned'] = report['n_drv_earned'].astype(int)
     report['pct_active'] = report['n_drv_active'] / report['n_drv_in_cohort']
     report['pct_earned'] = report['n_drv_earned'] / report['n_drv_in_cohort']
+    report['pct_earned_of_active'] = (report['n_drv_earned'] / report['n_drv_active'].replace(0, np.nan)).fillna(0)
     report = report.sort_values('total_cost', ascending=False)
 
     return json.dumps({
@@ -1508,12 +1535,12 @@ def opt_cost(tiers_json, incentive_type):
         payout = np.clip(amount - _OPT['earnings'], 0, None)
     elif incentive_type == 'multiplier':
         payout = np.zeros(len(n))
-        prev_trips = 0
-        for t in sorted(tiers, key=lambda t: t['trips']):
-            band_earnings = _OPT['avg_earnings'] * (t['trips'] - prev_trips)
+        completed_trips = 0
+        for t in tiers:
+            completed_trips += t['trips']
+            band_earnings = _OPT['avg_earnings'] * t['trips']
             tier_pay = np.minimum((t['pct'] / 100.0) * band_earnings, float(t['cap']))
-            payout = payout + np.where(n >= t['trips'], tier_pay, 0.0)
-            prev_trips = t['trips']
+            payout = payout + np.where(n >= completed_trips, tier_pay, 0.0)
     else:
         payout = np.zeros(len(n))
         for t in sorted(tiers, key=lambda t: t['min_trips']):
@@ -1890,13 +1917,14 @@ function removeRangeRow() {
 // ---------- Tier rows ----------
 let tierCount = 0;
 function addTierRow(minTrips, reward) {
+  const shownTrips = incrementFromCumulative('#tierTbody', '.tier-min', minTrips);
   tierCount++;
   const tbody = document.getElementById('tierTbody');
   const tr = document.createElement('tr');
   tr.className = 'tier-row';
   tr.innerHTML = `
     <td class="tiernum">${tierCount}</td>
-    <td><input type="number" class="tier-min" value="${minTrips ?? 0}"></td>
+    <td><input type="number" class="tier-min" value="${shownTrips}"></td>
     <td><input type="number" class="tier-reward" value="${reward ?? 0}"></td>
   `;
   tbody.appendChild(tr);
@@ -1910,13 +1938,14 @@ function removeTierRow() {
 // ---------- Guarantee tier rows (separate table so switching type never loses either config) ----------
 let guaranteeTierCount = 0;
 function addGuaranteeTierRow(minTrips, amount) {
+  const shownTrips = incrementFromCumulative('#guaranteeTierTbody', '.guarantee-tier-min', minTrips);
   guaranteeTierCount++;
   const tbody = document.getElementById('guaranteeTierTbody');
   const tr = document.createElement('tr');
   tr.className = 'tier-row';
   tr.innerHTML = `
     <td class="tiernum">${guaranteeTierCount}</td>
-    <td><input type="number" class="guarantee-tier-min" value="${minTrips ?? 0}"></td>
+    <td><input type="number" class="guarantee-tier-min" value="${shownTrips}"></td>
     <td><input type="number" class="guarantee-tier-amount" value="${amount ?? 0}"></td>
   `;
   tbody.appendChild(tr);
@@ -1992,17 +2021,18 @@ function refreshTierMetrics() {
   if (totalEl) {
     const sum = [...document.querySelectorAll('#tierTbody .tier-reward')].reduce((a, i) => a + (parseFloat(i.value) || 0), 0);
     totalEl.textContent = fmtMoney(sum) + ' ' + (document.getElementById('currencyInput').value || '');
+    const tripsSum = [...document.querySelectorAll('#tierTbody .tier-min')].reduce((a, i) => a + (parseFloat(i.value) || 0), 0);
+    document.getElementById('tierTripsTotal').textContent = fmtMoney(tripsSum);
   }
-  const rows = [...document.querySelectorAll('#tierTbody tr')].map(tr => ({
-    tr,
-    trips: parseFloat(tr.querySelector('.tier-min').value) || 0,
-    reward: parseFloat(tr.querySelector('.tier-reward').value) || 0,
-  }));
-  rows.forEach(row => {
-    const prev = rows.filter(r => r !== row && r.trips < row.trips).sort((a, b) => b.trips - a.trips)[0];
-    const band = row.trips - (prev ? prev.trips : 0);
-    row.rpt = (band > 0 && row.reward > 0) ? row.reward / band : null;
-    row.prev = prev;
+  let cumulative = 0;
+  const rows = [...document.querySelectorAll('#tierTbody tr')].map(tr => {
+    const increment = parseFloat(tr.querySelector('.tier-min').value) || 0;
+    cumulative += increment;
+    return { tr, increment, trips: cumulative, reward: parseFloat(tr.querySelector('.tier-reward').value) || 0 };
+  });
+  rows.forEach((row, i) => {
+    row.rpt = (row.increment > 0 && row.reward > 0) ? row.reward / row.increment : null;
+    row.prev = i > 0 ? rows[i - 1] : null;
   });
   rows.forEach(row => {
     const tripsCell = row.tr.querySelector('.tier-min').closest('td');
@@ -2031,6 +2061,7 @@ document.querySelectorAll('#incentiveTypeSwitch .switch-btn').forEach(btn => {
     document.getElementById('optRptFloorBox').style.display = INCENTIVE_TYPE === 'dxgy' ? '' : 'none';
     refreshPush1SendTimeDefault();
     refreshPush1ContentDefault();
+    refreshTitleDefault();
     if (isPush2Enabled()) refreshPush2Defaults();
   });
 });
@@ -2063,13 +2094,14 @@ addGuaranteeTierRow(13, 39000);
 addGuaranteeTierRow(15, 48000);
 addGuaranteeTierRow(20, 80000);
 
-// Defaults matching Juan's Multiplier example (9 trips -> 20% cap 12; +4 trips -> 30% cap 12)
+// Defaults matching Juan's Multiplier example (stage 1: 9 trips -> 20% cap 12; stage 2: 4 more trips -> 30% cap 12)
 addMultiplierTierRow(9, 20, 12);
-addMultiplierTierRow(13, 30, 12);
+addMultiplierTierRow(4, 30, 12);
 
 refreshEventPeriodField();
 refreshPush1SendTimeDefault();
 refreshPush1ContentDefault();
+refreshTitleDefault();
 
 // ---------- Budget optimizer ----------
 // A starting point, not a recommendation: calibrates tiers/rewards to roughly spend a target
@@ -2391,7 +2423,7 @@ document.getElementById('optimizeBtn').addEventListener('click', async () => {
   document.getElementById('optProgressBar').style.width = '4%';
   document.getElementById('optProgress').style.display = '';
   // Let the browser paint the spinner before the first (blocking) Python call starts.
-  await new Promise(r => requestAnimationFrame(() => setTimeout(r, 30)));
+  await new Promise(r => setTimeout(r, 60));
 
   try {
     const hourRanges = [...document.querySelectorAll('#rangeTbody tr')].map(tr => [
@@ -2460,18 +2492,20 @@ document.getElementById('optimizeBtn').addEventListener('click', async () => {
     const theadRow = document.getElementById('optTiersTheadRow');
     const tbody = document.getElementById('optTiersTbody');
     if (INCENTIVE_TYPE === 'guarantee') {
-      theadRow.innerHTML = '<tr><th>#</th><th>Min. trips</th><th>Monto garantizado</th></tr>';
-      tbody.innerHTML = roundedTiers.map((t, i) => `<tr><td>${i + 1}</td><td>${t.min_trips}</td><td>${fmtMoney(t.reward)} ${currency}</td></tr>`).join('');
+      theadRow.innerHTML = '<tr><th>#</th><th>Trips adicionales</th><th>Monto garantizado</th></tr>';
+      tbody.innerHTML = roundedTiers.map((t, i) => `<tr><td>${i + 1}</td><td>${t.min_trips - (i ? roundedTiers[i - 1].min_trips : 0)}</td><td>${fmtMoney(t.reward)} ${currency}</td></tr>`).join('');
     } else if (INCENTIVE_TYPE === 'multiplier') {
       theadRow.innerHTML = '<tr><th>#</th><th>Trips</th><th>% Multiplicador</th><th>Cap</th></tr>';
       tbody.innerHTML = roundedTiers.map((t, i) => `<tr><td>${i + 1}</td><td>${t.trips}</td><td>${t.pct}%</td><td>${fmtMoney(t.cap)} ${currency}</td></tr>`).join('');
     } else {
-      theadRow.innerHTML = '<tr><th>#</th><th>Min. trips</th><th>Reward</th></tr>';
-      tbody.innerHTML = roundedTiers.map((t, i) => `<tr><td>${i + 1}</td><td>${t.min_trips}</td><td>${fmtMoney(t.reward)} ${currency}</td></tr>`).join('');
+      theadRow.innerHTML = '<tr><th>#</th><th>Trips adicionales</th><th>Reward</th></tr>';
+      tbody.innerHTML = roundedTiers.map((t, i) => `<tr><td>${i + 1}</td><td>${t.min_trips - (i ? roundedTiers[i - 1].min_trips : 0)}</td><td>${fmtMoney(t.reward)} ${currency}</td></tr>`).join('');
     }
     document.getElementById('optProjectedCost').textContent = `${fmtMoney(finalResult.total)} ${currency} (objetivo: ${fmtMoney(budget)} ${currency})`;
     const rewardSumRow = document.getElementById('optRewardSumRow');
     rewardSumRow.style.display = INCENTIVE_TYPE === 'dxgy' ? '' : 'none';
+    document.getElementById('optTripsSumRow').style.display = INCENTIVE_TYPE === 'dxgy' ? '' : 'none';
+    document.getElementById('optTripsSum').textContent = fmtMoney(roundedTiers.length ? roundedTiers[roundedTiers.length - 1].min_trips : 0);
     document.getElementById('optRewardSum').textContent = `${fmtMoney(roundedTiers.reduce((a, t) => a + (t.reward || 0), 0))} ${currency}`;
     document.getElementById('optResultBox').style.display = '';
     document.getElementById('optResultBox').dataset.tiers = JSON.stringify(roundedTiers);
@@ -2540,10 +2574,7 @@ async function runCalculation() {
   ]);
   let tiers;
   if (INCENTIVE_TYPE === 'guarantee') {
-    tiers = [...document.querySelectorAll('#guaranteeTierTbody tr')].map(tr => ({
-      min_trips: parseFloat(tr.querySelector('.guarantee-tier-min').value) || 0,
-      reward: parseFloat(tr.querySelector('.guarantee-tier-amount').value) || 0,
-    }));
+    tiers = readCumulativeTiers('#guaranteeTierTbody', '.guarantee-tier-min', '.guarantee-tier-amount');
   } else if (INCENTIVE_TYPE === 'multiplier') {
     tiers = [...document.querySelectorAll('#multiplierTierTbody tr')].map(tr => ({
       trips: parseFloat(tr.querySelector('.multiplier-tier-trips').value) || 0,
@@ -2551,10 +2582,7 @@ async function runCalculation() {
       cap: parseFloat(tr.querySelector('.multiplier-tier-cap').value) || 0,
     }));
   } else {
-    tiers = [...document.querySelectorAll('#tierTbody tr')].map(tr => ({
-      min_trips: parseFloat(tr.querySelector('.tier-min').value) || 0,
-      reward: parseFloat(tr.querySelector('.tier-reward').value) || 0,
-    }));
+    tiers = readCumulativeTiers('#tierTbody', '.tier-min', '.tier-reward');
   }
   const hourOffset = (CITY_INFO[DETECTED_CITY] && CITY_INFO[DETECTED_CITY].hour_offset) || 0;
   const snapshotRef = document.getElementById('snapshotRefInput').value;
@@ -2646,6 +2674,7 @@ function renderReport(report, currency) {
       <td>${fmtPct(row.pct_active)}</td>
       <td>${row.n_drv_earned.toLocaleString()}</td>
       <td>${fmtPct(row.pct_earned)}</td>
+      <td>${fmtPct(row.pct_earned_of_active)}</td>
       <td>${fmtMoney(row.total_cost)} ${currency}</td>
       <td>${row.avg_cost_per_earner ? fmtMoney(row.avg_cost_per_earner) + ' ' + currency : '-'}</td>
     `;
