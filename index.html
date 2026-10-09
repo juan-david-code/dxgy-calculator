@@ -447,6 +447,13 @@
       </thead>
       <tbody id="reportTbody"></tbody>
     </table>
+
+    <div class="section-label" style="margin-top:22px;">Detalle por tier <span id="tierBreakdownScope" class="muted" style="font-weight:400; font-size:12px;"></span></div>
+    <table id="tierBreakdownTable">
+      <thead id="tierBreakdownHead"></thead>
+      <tbody id="tierBreakdownBody"></tbody>
+    </table>
+    <div class="meta-line" id="tierBreakdownNote"></div>
   </div>
 
   <div class="panel">
@@ -1391,6 +1398,8 @@ def run_dxgy_pipeline(trips_json, cohort_json, city, hour_offset, snapshot_ref_d
         return json.dumps({"error": built})
     per_drv, cohort_snapshot, meta = built
 
+    tier_defs = []
+    tier_stats = {}
     if per_drv.empty:
         report = pd.DataFrame(columns=['cohort', 'n_drv_active', 'n_drv_earned', 'total_cost', 'avg_cost_per_earner'])
     else:
@@ -1444,6 +1453,39 @@ def run_dxgy_pipeline(trips_json, cohort_json, city, hour_offset, snapshot_ref_d
 
         per_drv['earned_reward'] = per_drv['payout'] > 0
 
+        # Per-tier breakdown (feeds the "Detalle por tier" panel). Computed separately from the
+        # payouts above so those stay untouched; the per-tier burns add up to total payout.
+        n_proj = per_drv['projected_trips'].to_numpy()
+        if incentive_type == 'multiplier':
+            cum = 0
+            avg_e = np.where(per_drv['total_trips'] > 0, per_drv['total_earnings'] / per_drv['total_trips'], 0.0)
+            reach_cols, burn_cols = [], []
+            for t in tiers:
+                cum += t['trips']
+                tier_defs.append({'cum_trips': cum, 'trips': t['trips'], 'pct': t['pct'], 'cap': t['cap']})
+                reached = n_proj >= cum
+                reach_cols.append(reached)
+                burn_cols.append(np.where(reached, np.minimum(t['pct'] / 100.0 * avg_e * t['trips'], t['cap']), 0.0))
+        else:
+            ordered = sorted(tiers, key=lambda t: t['min_trips'])
+            reach_cols = [n_proj >= t['min_trips'] for t in ordered]
+            for t in ordered:
+                tier_defs.append({'cum_trips': t['min_trips'], 'reward': t['reward']})
+            if incentive_type == 'guarantee':
+                # Tiers replace each other: the top-up is attributed to the highest tier reached.
+                highest = np.sum(reach_cols, axis=0) - 1
+                burn_cols = [np.where(highest == i, per_drv['payout'].to_numpy(), 0.0) for i in range(len(ordered))]
+            else:
+                burn_cols = [np.where(reach_cols[i], float(t['reward']), 0.0) for i, t in enumerate(ordered)]
+        if tier_defs:
+            reach_m = np.column_stack(reach_cols).astype(int)
+            burn_m = np.column_stack(burn_cols)
+            for cohort_name, idx in per_drv.groupby('cohort').indices.items():
+                tier_stats[cohort_name] = {
+                    'winners': reach_m[idx].sum(axis=0).astype(int).tolist(),
+                    'burn': burn_m[idx].sum(axis=0).tolist(),
+                }
+
         report = per_drv.groupby('cohort', as_index=False).agg(
             n_drv_active=('drv_id', 'nunique'),
             n_drv_earned=('earned_reward', 'sum'),
@@ -1462,7 +1504,9 @@ def run_dxgy_pipeline(trips_json, cohort_json, city, hour_offset, snapshot_ref_d
 
     return json.dumps({
         'report': json.loads(report.to_json(orient='records')),
-        'meta': meta
+        'meta': meta,
+        'tier_defs': tier_defs,
+        'tier_stats': tier_stats,
     })
 
 
@@ -2611,6 +2655,7 @@ async function runCalculation() {
 
     if (result.error) throw new Error(result.error);
 
+    LAST_TIER_RESULT = { report: result.report, tier_defs: result.tier_defs || [], tier_stats: result.tier_stats || {}, incentive_type: INCENTIVE_TYPE };
     renderReport(result.report, currency);
     renderMeta(result.meta);
 
@@ -2693,6 +2738,53 @@ function renderReport(report, currency) {
   });
 }
 
+// Per-tier burn and win rate for the cohorts currently checked in the report (all cohorts when
+// none is checked). Win rate = drivers who reach the tier / drivers in the cohort(s), the same
+// base as "% que ganan"; the second % uses active drivers as the base.
+let LAST_TIER_RESULT = null;
+function renderTierBreakdown() {
+  const head = document.getElementById('tierBreakdownHead');
+  const body = document.getElementById('tierBreakdownBody');
+  const scope = document.getElementById('tierBreakdownScope');
+  const note = document.getElementById('tierBreakdownNote');
+  const r = LAST_TIER_RESULT;
+  if (!r || !r.tier_defs.length) { head.innerHTML = ''; body.innerHTML = ''; scope.textContent = ''; note.textContent = ''; return; }
+
+  const checked = [...document.querySelectorAll('.cohort-check:checked')].map(c => c.closest('tr').dataset.cohort);
+  const cohorts = checked.length ? checked : r.report.map(x => x.cohort);
+  scope.textContent = checked.length ? `(${checked.length} cohort(s) seleccionado(s))` : '(todos los cohorts)';
+
+  const inScope = r.report.filter(x => cohorts.includes(x.cohort));
+  const nCohort = inScope.reduce((a, x) => a + x.n_drv_in_cohort, 0);
+  const nActive = inScope.reduce((a, x) => a + x.n_drv_active, 0);
+  const currency = document.getElementById('currencyInput').value || '';
+  const T = r.tier_defs.length;
+  const winners = new Array(T).fill(0), burn = new Array(T).fill(0);
+  cohorts.forEach(c => {
+    const st = r.tier_stats[c];
+    if (!st) return;
+    for (let i = 0; i < T; i++) { winners[i] += st.winners[i]; burn[i] += st.burn[i]; }
+  });
+  const totalBurn = burn.reduce((a, b) => a + b, 0);
+
+  head.innerHTML = r.incentive_type === 'multiplier'
+    ? '<tr><th>Tier</th><th>Trips de la etapa</th><th>% / Cap</th><th># drv que lo alcanzan</th><th>Win rate (% del cohort)</th><th>% de activos</th><th>Burn</th><th>% del burn</th></tr>'
+    : `<tr><th>Tier</th><th>Trips (acumulados)</th><th>${r.incentive_type === 'guarantee' ? 'Monto garantizado' : 'Reward'}</th><th># drv que lo alcanzan</th><th>Win rate (% del cohort)</th><th>% de activos</th><th>Burn</th><th>% del burn</th></tr>`;
+  body.innerHTML = r.tier_defs.map((d, i) => {
+    const mid = r.incentive_type === 'multiplier'
+      ? `<td>${d.trips}</td><td>${d.pct}% / ${fmtMoney(d.cap)}</td>`
+      : `<td>${d.cum_trips}</td><td>${fmtMoney(d.reward)} ${currency}</td>`;
+    return `<tr><td>${i + 1}</td>${mid}<td>${winners[i].toLocaleString()}</td>
+      <td>${nCohort ? fmtPct(winners[i] / nCohort) : '-'}</td>
+      <td>${nActive ? fmtPct(winners[i] / nActive) : '-'}</td>
+      <td>${fmtMoney(burn[i])} ${currency}</td>
+      <td>${totalBurn ? fmtPct(burn[i] / totalBurn) : '-'}</td></tr>`;
+  }).join('') + `<tr><td colspan="${r.incentive_type === 'multiplier' ? 6 : 6}" style="text-align:right; font-weight:700;">Total</td><td>${fmtMoney(totalBurn)} ${currency}</td><td>${totalBurn ? '100.0%' : '-'}</td></tr>`;
+  note.textContent = r.incentive_type === 'guarantee'
+    ? 'Garantizado: "lo alcanzan" cuenta drivers que llegan al tier; el burn (monto garantizado menos lo ya ganado) se atribuye al tier más alto que alcanzó cada driver.'
+    : (r.incentive_type === 'multiplier' ? 'Multiplier: el burn de cada etapa es el premio que pagan los drivers que la completan.' : '');
+}
+
 function updateSubtotal() {
   const checks = [...document.querySelectorAll('.cohort-check')];
   let sum = 0, count = 0;
@@ -2704,6 +2796,7 @@ function updateSubtotal() {
   const currency = document.getElementById('currencyInput').value || '';
   document.getElementById('selSubtotal').textContent = fmtMoney(sum) + ' ' + currency;
   document.getElementById('selCount').textContent = count;
+  renderTierBreakdown();
   updateRemarkSuggestion(COHORT_SELECTION_ORDER);
 }
 
