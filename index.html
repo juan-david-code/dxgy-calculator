@@ -218,6 +218,7 @@
   <h1 class="title">Calculadora de incentivos</h1>
   <div class="top-bar-row">
     <button type="button" id="openCartModalBtn" class="secondary city-gear-btn">🛒 Carrito Magellan (<span id="cartCount">0</span>)</button>
+    <button type="button" id="openHistoryModalBtn" class="secondary city-gear-btn">🗂 Historial</button>
     <button type="button" id="openTncModalBtn" class="secondary city-gear-btn">📄 T&amp;Cs por ciudad</button>
     <button type="button" id="openCityModalBtn" class="secondary city-gear-btn">⚙ Ciudades</button>
   </div>
@@ -563,6 +564,37 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="historyModalOverlay">
+  <div class="modal-box" style="max-width:1150px;">
+    <div class="modal-header">
+      <span>Historial de incentivos</span>
+      <button type="button" id="closeHistoryModalBtn" class="modal-close">&times;</button>
+    </div>
+    <div class="meta-line">Cada incentivo que consolidas y descargas queda registrado aquí por ciudad, con su configuración y el burn que calculaste. Búscalo por fecha del Reward Period (muestra los que incluyen o se cruzan con la fecha o rango elegido) y dale "Editar" para cargarlo de vuelta en la calculadora y usarlo de plantilla. Queda guardado en este navegador.</div>
+    <div class="top-controls">
+      <div class="control-box">
+        <div class="row-inline" style="margin:0;"><label>Ciudad</label>
+          <select id="historyCitySelect"></select>
+        </div>
+      </div>
+      <div class="control-box">
+        <div class="row-inline" style="margin:0;"><label>Fecha (Reward Period)</label>
+          <input type="text" id="historyDateInput" style="width:200px;" placeholder="Todas las fechas">
+          <button type="button" id="historyClearDateBtn" class="secondary" style="margin:0;">Limpiar</button>
+        </div>
+      </div>
+    </div>
+    <div class="meta-line" id="historyCount"></div>
+    <table>
+      <thead>
+        <tr><th>Ciudad</th><th>Tipo</th><th>Reward Period</th><th>Franjas</th><th>Tiers</th><th>Cohorts</th><th>Burn calculado</th><th>Win rate</th><th>Descargado</th><th></th></tr>
+      </thead>
+      <tbody id="historyTbody"></tbody>
+    </table>
+    <div id="historyEmptyMsg" class="meta-line" style="display:none;">No hay incentivos para este filtro.</div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="tncModalOverlay">
   <div class="modal-box" style="max-width:820px;">
     <div class="modal-header">
@@ -759,7 +791,7 @@ document.getElementById('cityModalOverlay').addEventListener('click', (e) => {
   if (e.target.id === 'cityModalOverlay') closeCityModal();
 });
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') { closeCityModal(); closeCartModal(); closeTncModal(); }
+  if (e.key === 'Escape') { closeCityModal(); closeCartModal(); closeTncModal(); closeHistoryModal(); }
 });
 
 // ---------- Magellan upload cart ----------
@@ -777,6 +809,7 @@ const MAGELLAN_COLUMNS = [
 const MAGELLAN_EVENT_TYPE = { dxgy: 'RealtimeDxGyReward', guarantee: 'GuaranteeReward', multiplier: 'Multiplier' };
 const MAGELLAN_TYPE_LABEL = { dxgy: 'DxGy', guarantee: 'Garantizado', multiplier: 'Multiplier' };
 const CART_STORAGE_KEY = 'dxgy_calc_magellan_cart_v1';
+const HISTORY_STORAGE_KEY = 'dxgy_calc_magellan_history_v1';
 
 // City for the Magellan cart is never independently picked — it always mirrors the city
 // detected from the uploaded trips file, so a cart item can't accidentally target the wrong city.
@@ -1213,7 +1246,31 @@ document.getElementById('addToCartBtn').addEventListener('click', () => {
     return;
   }
 
+  // Snapshot of the calculator state behind this incentive, so the Historial can load it back
+  // as an editable template and show the burn that was calculated for it.
+  const hourRanges = [...document.querySelectorAll('#rangeTbody tr')].map(tr => [
+    parseInt(tr.querySelector('.range-start').value) || 0,
+    parseInt(tr.querySelector('.range-end').value) || 0,
+  ]);
+  const checkedCohorts = COHORT_SELECTION_ORDER.filter(c => LAST_REPORT_COHORTS.includes(c));
+  let forecastBurn = null, winRate = null;
+  if (LAST_TIER_RESULT && checkedCohorts.length) {
+    const rows = LAST_TIER_RESULT.report.filter(r => checkedCohorts.includes(r.cohort));
+    forecastBurn = rows.reduce((a, r) => a + r.total_cost, 0);
+    const inCohort = rows.reduce((a, r) => a + r.n_drv_in_cohort, 0);
+    winRate = inCohort ? rows.reduce((a, r) => a + r.n_drv_earned, 0) / inCohort : null;
+  }
+
   CART.push({
+    snapshot: {
+      tiers,
+      hourRanges,
+      incrementality: parseFloat(document.getElementById('incrementalityInput').value) || 1,
+      cohorts: checkedCohorts,
+      forecastBurn,
+      winRate,
+      currency: document.getElementById('currencyInput').value || '',
+    },
     incentiveType: INCENTIVE_TYPE,
     city: (cityInfo && cityInfo.name) || cityId,
     cityId,
@@ -1242,23 +1299,239 @@ document.getElementById('clearCartBtn').addEventListener('click', () => {
   renderCart();
 });
 
+function downloadMagellanTemplate(items, fileStem) {
+  const aoa = [MAGELLAN_COLUMNS, ...items.map(buildMagellanRow)];
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+  const stamp = new Date().toISOString().slice(0, 10);
+  XLSX.writeFile(wb, `${fileStem}_${stamp}.xlsx`);
+}
+
+// ---------- History: every incentive that gets consolidated and downloaded is logged per city ----------
+let HISTORY = [];
+try {
+  const savedHistory = JSON.parse(localStorage.getItem(HISTORY_STORAGE_KEY));
+  if (Array.isArray(savedHistory)) HISTORY = savedHistory;
+} catch (e) { /* ignore corrupt storage */ }
+
+function saveHistory() {
+  try {
+    localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(HISTORY));
+    return true;
+  } catch (e) { return false; }
+}
+
+// "2026-10-10~2026-10-17" -> {start, end}; a single date is a one-day period. ISO dates compare
+// correctly as plain strings.
+function parseRewardPeriod(rp) {
+  const [a, b] = String(rp || '').split('~');
+  return { start: (a || '').trim(), end: ((b || a) || '').trim() };
+}
+
+function escHtml(v) {
+  return String(v ?? '').replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+}
+
+function logCartToHistory(items) {
+  const downloadedAt = new Date().toISOString();
+  items.forEach((item, i) => {
+    HISTORY.push({ ...item, historyId: `${Date.now()}_${i}`, downloadedAt });
+  });
+  return saveHistory();
+}
+
+function describeTiers(rec) {
+  const t = (rec.snapshot && rec.snapshot.tiers) || [];
+  const cur = (rec.snapshot && rec.snapshot.currency) || '';
+  if (rec.incentiveType === 'multiplier') {
+    return t.map((x, i) => `${i + 1}: ${x.trips} trips · ${x.pct}% · cap ${fmtMoney(x.cap)}`).join('<br>');
+  }
+  let prev = 0;
+  return t.map((x, i) => {
+    const inc = x.min_trips - prev;
+    prev = x.min_trips;
+    return `${i + 1}: +${inc} trips → ${fmtMoney(x.reward)} ${cur}${rec.incentiveType === 'guarantee' ? ' (total)' : ''}`;
+  }).join('<br>');
+}
+
+let historyDatePicker = null;
+function historyDateRange() {
+  const d = historyDatePicker ? historyDatePicker.selectedDates : [];
+  if (!d.length) return null;
+  const fmt = x => `${x.getFullYear()}-${pad2(x.getMonth() + 1)}-${pad2(x.getDate())}`;
+  return { from: fmt(d[0]), to: fmt(d[d.length - 1]) };
+}
+
+function historyFiltered() {
+  const cityId = document.getElementById('historyCitySelect').value;
+  const range = historyDateRange();
+  return HISTORY
+    .filter(r => !cityId || r.cityId === cityId)
+    .filter(r => {
+      if (!range) return true;
+      const p = parseRewardPeriod(r.rewardPeriod);
+      return p.start <= range.to && p.end >= range.from;
+    })
+    .sort((a, b) => parseRewardPeriod(b.rewardPeriod).start.localeCompare(parseRewardPeriod(a.rewardPeriod).start)
+      || b.downloadedAt.localeCompare(a.downloadedAt));
+}
+
+function renderHistoryCitySelect() {
+  const sel = document.getElementById('historyCitySelect');
+  const previous = sel.value;
+  const counts = {};
+  HISTORY.forEach(r => { counts[r.cityId] = (counts[r.cityId] || 0) + 1; });
+  const nameOf = id => (CITY_INFO[id] && CITY_INFO[id].name) || (HISTORY.find(r => r.cityId === id) || {}).city || id;
+  sel.innerHTML = `<option value="">Todas las ciudades (${HISTORY.length})</option>` +
+    Object.keys(counts).map(id => `<option value="${escHtml(id)}">${escHtml(nameOf(id))} (${counts[id]})</option>`).join('');
+  sel.value = counts[previous] ? previous : '';
+}
+
+function renderHistory() {
+  const rows = historyFiltered();
+  const tbody = document.getElementById('historyTbody');
+  tbody.innerHTML = rows.map(r => {
+    const snap = r.snapshot || null;
+    const hours = snap ? snap.hourRanges.map(h => `${h[0]}-${h[1]}`).join(', ') : '-';
+    const cohorts = snap && snap.cohorts.length ? escHtml(r.remark || snap.cohorts.join(', ')) : escHtml(r.remark || '-');
+    return `
+    <tr>
+      <td>${escHtml(r.city)}</td>
+      <td>${escHtml(MAGELLAN_TYPE_LABEL[r.incentiveType] || r.incentiveType)}</td>
+      <td>${escHtml(r.rewardPeriod)}</td>
+      <td>${escHtml(hours)}</td>
+      <td style="text-align:left; font-size:11.5px; white-space:nowrap;">${snap ? describeTiers(r) : '-'}</td>
+      <td>${cohorts}</td>
+      <td>${snap && snap.forecastBurn !== null ? fmtMoney(snap.forecastBurn) + ' ' + escHtml(snap.currency) : '-'}</td>
+      <td>${snap && snap.winRate !== null ? fmtPct(snap.winRate) : '-'}</td>
+      <td>${escHtml((r.downloadedAt || '').slice(0, 10))}</td>
+      <td style="white-space:nowrap;">
+        <button type="button" class="history-edit-btn" data-id="${escHtml(r.historyId)}" ${snap ? '' : 'disabled title="Este registro no guardó su configuración"'} style="padding:4px 12px; margin:0;">✎ Editar</button>
+        <button type="button" class="secondary history-remove-btn" data-id="${escHtml(r.historyId)}" style="padding:4px 10px; margin:0 0 0 4px;">✕</button>
+      </td>
+    </tr>`;
+  }).join('');
+  document.getElementById('historyEmptyMsg').style.display = rows.length ? 'none' : '';
+  document.getElementById('historyCount').textContent = `${rows.length} incentivo(s) mostrado(s) de ${HISTORY.length}.`;
+  tbody.querySelectorAll('.history-remove-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      HISTORY = HISTORY.filter(r => r.historyId !== btn.dataset.id);
+      saveHistory();
+      renderHistoryCitySelect();
+      renderHistory();
+    });
+  });
+  tbody.querySelectorAll('.history-edit-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const rec = HISTORY.find(r => r.historyId === btn.dataset.id);
+      if (rec) loadIncentiveIntoEditor(rec);
+    });
+  });
+}
+
+// Cohorts to re-check in the report once the next calculation finishes (set by "Editar").
+let PENDING_COHORTS = [];
+function applyPendingCohorts() {
+  if (!PENDING_COHORTS.length) return;
+  const wanted = PENDING_COHORTS;
+  PENDING_COHORTS = [];
+  document.querySelectorAll('.cohort-check:checked').forEach(c => c.click());
+  wanted.forEach(name => {
+    const chk = [...document.querySelectorAll('.cohort-check')].find(c => c.closest('tr').dataset.cohort === name);
+    if (chk && !chk.checked) chk.click();
+  });
+}
+
+// Loads a past incentive back into the calculator as an editable template: type, tiers, franjas,
+// incrementality and every Magellan field. Date filters and the uploaded files stay as they are
+// (they belong to the data you're working with now), and the forecast is recalculated when the
+// trips + cohort files are already loaded.
+function loadIncentiveIntoEditor(rec) {
+  const snap = rec.snapshot;
+  if (!snap) return;
+  document.querySelector(`#incentiveTypeSwitch .switch-btn[data-type="${rec.incentiveType}"]`).click();
+
+  document.getElementById('rangeTbody').innerHTML = '';
+  rangeCount = 0;
+  snap.hourRanges.forEach(h => addRangeRow(h[0], h[1]));
+  document.getElementById('incrementalityInput').value = snap.incrementality;
+  setTiersForType(rec.incentiveType, snap.tiers);
+
+  const p = parseRewardPeriod(rec.rewardPeriod);
+  rewardPeriodPicker.setDate(p.start ? (p.end && p.end !== p.start ? [p.start, p.end] : [p.start]) : [], true);
+  document.getElementById('eventPeriodInput').value = rec.eventPeriod;
+  document.getElementById('targetGroupInput').value = rec.targetGroup;
+  document.getElementById('ratioControlInput').value = rec.ratioOfControl;
+  document.getElementById('titleInput').value = rec.title ?? '';
+  document.getElementById('push1ContentInput').value = rec.push1Content ?? '';
+  push1SendTimePicker.setDate(rec.push1SendTime, false);
+  document.getElementById('remarkInput').value = rec.remark || '';
+
+  const wantsPush2 = !!rec.push2SendTime;
+  if (wantsPush2 !== isPush2Enabled()) {
+    document.getElementById(wantsPush2 ? 'addPush2Btn' : 'removePush2Btn').click();
+  }
+  if (wantsPush2) {
+    push2SendTimePicker.setDate(rec.push2SendTime, false);
+    document.getElementById('push2ContentInput').value = rec.push2Content ?? '';
+  }
+
+  closeHistoryModal();
+  document.getElementById('dxgyTierWrap').closest('.panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+  const targetReady = TARGET_MODE === 'list' ? DRV_LIST_ROWS.length > 0 : COHORT_ROWS.length > 0;
+  const cityNote = DETECTED_CITY && rec.cityId !== DETECTED_CITY
+    ? ` Ojo: este incentivo era de ${rec.city}, pero los trips cargados son de otra ciudad.` : '';
+  if (pyodide && TRIPS_ROWS.length && targetReady) {
+    PENDING_COHORTS = snap.cohorts || [];
+    document.getElementById('calcStatus').textContent = 'Incentivo cargado como plantilla — recalculando...';
+    runCalculation();
+  } else {
+    document.getElementById('calcStatus').textContent = 'Incentivo cargado como plantilla. Sube trips y cohorts y dale "Calcular Forecast" para ver el burn.';
+  }
+  if (cityNote) document.getElementById('cartAddStatus').textContent = cityNote.trim();
+}
+
+function openHistoryModal() {
+  if (!historyDatePicker) {
+    historyDatePicker = flatpickr('#historyDateInput', {
+      mode: 'range', dateFormat: 'Y-m-d', altInput: true, altFormat: 'Y-m-d',
+      altInputClass: 'history-date-alt', locale: { rangeSeparator: ' -> ' },
+      onChange: () => renderHistory(),
+    });
+  }
+  renderHistoryCitySelect();
+  renderHistory();
+  document.getElementById('historyModalOverlay').classList.add('open');
+}
+function closeHistoryModal() { document.getElementById('historyModalOverlay').classList.remove('open'); }
+document.getElementById('openHistoryModalBtn').addEventListener('click', openHistoryModal);
+document.getElementById('closeHistoryModalBtn').addEventListener('click', closeHistoryModal);
+document.getElementById('historyModalOverlay').addEventListener('click', (e) => {
+  if (e.target.id === 'historyModalOverlay') closeHistoryModal();
+});
+document.getElementById('historyCitySelect').addEventListener('change', renderHistory);
+document.getElementById('historyClearDateBtn').addEventListener('click', () => {
+  if (historyDatePicker) historyDatePicker.clear();
+  renderHistory();
+});
+
 document.getElementById('downloadCartBtn').addEventListener('click', () => {
   if (!CART.length) {
     document.getElementById('cartEmptyMsg').style.display = '';
     return;
   }
-  const aoa = [MAGELLAN_COLUMNS, ...CART.map(buildMagellanRow)];
-  const ws = XLSX.utils.aoa_to_sheet(aoa);
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
-  const stamp = new Date().toISOString().slice(0, 10);
-  XLSX.writeFile(wb, `magellan_batch_config_${stamp}.xlsx`);
+  downloadMagellanTemplate(CART, 'magellan_batch_config');
+  const logged = logCartToHistory(CART);
 
   CART = [];
   saveCart();
   renderCart();
   document.querySelectorAll('.cohort-check').forEach(c => { if (c.checked) c.click(); });
-  document.getElementById('cartAddStatus').textContent = 'Plantilla descargada y carrito vaciado.';
+  document.getElementById('cartAddStatus').textContent = logged
+    ? 'Plantilla descargada, carrito vaciado y registrada en el Historial.'
+    : 'Plantilla descargada y carrito vaciado, pero NO se pudo guardar en el Historial (almacenamiento del navegador lleno).';
 });
 
 // ---------- Cart modal ----------
@@ -2658,6 +2931,7 @@ async function runCalculation() {
     LAST_TIER_RESULT = { report: result.report, tier_defs: result.tier_defs || [], tier_stats: result.tier_stats || {}, incentive_type: INCENTIVE_TYPE };
     renderReport(result.report, currency);
     renderMeta(result.meta);
+    applyPendingCohorts();
 
     document.getElementById('calcStatus').textContent = 'Cálculo actualizado.';
   } catch (err) {
