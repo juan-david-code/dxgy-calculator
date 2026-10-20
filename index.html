@@ -344,6 +344,7 @@
         <thead><tr><th>#</th><th>Trips adicionales</th><th>Monto garantizado (total)</th></tr></thead>
         <tbody id="guaranteeTierTbody"></tbody>
       </table>
+      <div class="meta-line" style="margin-top:8px;">Suma total de trips (acumulados hasta el último tier): <b id="guaranteeTripsTotal">0</b></div>
     </div>
 
     <div id="multiplierTierWrap" style="display:none;">
@@ -368,6 +369,11 @@
       <div class="control-box">
         <div class="row-inline" style="margin:0;"><label>Presupuesto objetivo</label>
           <input type="number" id="optBudgetInput" style="width:130px;" placeholder="50000">
+        </div>
+      </div>
+      <div class="control-box" id="optGuaranteeFloorBox" style="display:none;">
+        <div class="row-inline" style="margin:0;"><label>Mínimo garantizado por trip</label>
+          <input type="number" id="optGuaranteeFloorInput" value="1" min="0" step="0.1" style="width:80px;">
         </div>
       </div>
       <div class="control-box" id="optRptFloorBox">
@@ -2266,10 +2272,11 @@ function addGuaranteeTierRow(minTrips, amount) {
     <td><input type="number" class="guarantee-tier-amount" value="${amount ?? 0}"></td>
   `;
   tbody.appendChild(tr);
+  refreshTierMetrics();
 }
 function removeGuaranteeTierRow() {
   const tbody = document.getElementById('guaranteeTierTbody');
-  if (tbody.children.length > 1) { tbody.removeChild(tbody.lastChild); guaranteeTierCount--; renumber('.tiernum', '#guaranteeTierTbody'); }
+  if (tbody.children.length > 1) { tbody.removeChild(tbody.lastChild); guaranteeTierCount--; renumber('.tiernum', '#guaranteeTierTbody'); refreshTierMetrics(); }
 }
 
 // ---------- Multiplier tier rows (separate table so switching type never loses either config) ----------
@@ -2330,7 +2337,25 @@ function setMetricTag(cell, key, cls, text) {
   tag.textContent = text;
 }
 
+// Guarantee has no RPT (a higher tier replaces the lower one instead of adding to it), so its
+// only tag is the guaranteed amount per trip: total guaranteed amount / trips needed to reach it.
+function refreshGuaranteeMetrics() {
+  let cumulative = 0;
+  document.querySelectorAll('#guaranteeTierTbody tr').forEach(tr => {
+    cumulative += parseFloat(tr.querySelector('.guarantee-tier-min').value) || 0;
+    const amount = parseFloat(tr.querySelector('.guarantee-tier-amount').value) || 0;
+    const cell = tr.querySelector('.guarantee-tier-amount').closest('td');
+    setMetricTag(cell, 'perTrip', 'orange', cumulative > 0 && amount > 0 ? 'Garant./trip ' + fmtTagNumber(amount / cumulative) : null);
+  });
+  const totalEl = document.getElementById('guaranteeTripsTotal');
+  if (totalEl) {
+    const sum = [...document.querySelectorAll('#guaranteeTierTbody .guarantee-tier-min')].reduce((a, i) => a + (parseFloat(i.value) || 0), 0);
+    totalEl.textContent = fmtMoney(sum);
+  }
+}
+
 function refreshTierMetrics() {
+  refreshGuaranteeMetrics();
   // Total hours drivers have to hit the tier = franja hours per day x number of included days
   // (1 when no trips are loaded yet, so the tags still work on a blank page).
   const hours = franjaHoursCovered() * Math.max(1, getSelectedDates().length);
@@ -2361,7 +2386,7 @@ function refreshTierMetrics() {
   });
 }
 document.addEventListener('input', (e) => {
-  if (e.target.closest && e.target.closest('#rangeTbody, #tierTbody, #currencyInput')) {
+  if (e.target.closest && e.target.closest('#rangeTbody, #tierTbody, #guaranteeTierTbody, #currencyInput')) {
     refreshTierMetrics();
   }
 });
@@ -2376,6 +2401,7 @@ document.querySelectorAll('#incentiveTypeSwitch .switch-btn').forEach(btn => {
     document.getElementById('guaranteeTierWrap').style.display = INCENTIVE_TYPE === 'guarantee' ? '' : 'none';
     document.getElementById('multiplierTierWrap').style.display = INCENTIVE_TYPE === 'multiplier' ? '' : 'none';
     document.getElementById('optRptFloorBox').style.display = INCENTIVE_TYPE === 'dxgy' ? '' : 'none';
+    document.getElementById('optGuaranteeFloorBox').style.display = INCENTIVE_TYPE === 'guarantee' ? '' : 'none';
     refreshPush1SendTimeDefault();
     refreshPush1ContentDefault();
     refreshTitleDefault();
@@ -2587,49 +2613,73 @@ function scaleThresholdsUp(baseThresholds, d) {
 //   the floor (k=1) and instead the trip thresholds are raised — fewer drivers qualify — until
 //   cost comes back under budget. This is exactly "sube la dificultad" instead of cutting reward
 //   below what makes the incentive worth chasing.
-async function solveDxGyWithFloor(baseThresholds, budget, ctx, rptFloor) {
-  const rates = dxgyRates(baseThresholds.length);
-  const floorTiers = buildDxGyTiers(baseThresholds, rates, rptFloor, 1);
+async function solveWithFloor(baseThresholds, budget, ctx, build) {
+  const floorTiers = build(baseThresholds, 1);
   const floorResult = await costForTiers(floorTiers, ctx);
 
   if (floorResult.total <= budget) {
     let lo = 1, hi = 2;
-    let hiResult = await costForTiers(buildDxGyTiers(baseThresholds, rates, rptFloor, hi), ctx);
+    let hiResult = await costForTiers(build(baseThresholds, hi), ctx);
     let guard = 0;
     while (hiResult.total < budget && guard < 40) {
       hi *= 2;
-      hiResult = await costForTiers(buildDxGyTiers(baseThresholds, rates, rptFloor, hi), ctx);
+      hiResult = await costForTiers(build(baseThresholds, hi), ctx);
       guard++;
     }
     let bestK = 1, bestResult = floorResult;
     for (let i = 0; i < 25; i++) {
       const mid = (lo + hi) / 2;
-      const midResult = await costForTiers(buildDxGyTiers(baseThresholds, rates, rptFloor, mid), ctx);
+      const midResult = await costForTiers(build(baseThresholds, mid), ctx);
       if (midResult.total <= budget) { lo = mid; bestK = mid; bestResult = midResult; }
       else { hi = mid; }
     }
-    return { rawTiers: buildDxGyTiers(baseThresholds, rates, rptFloor, bestK), rates, total: bestResult.total, mode: 'reward' };
+    return { rawTiers: build(baseThresholds, bestK), total: bestResult.total, mode: 'reward' };
   }
 
   let lo = 1, hi = 2;
   let hiThresholds = scaleThresholdsUp(baseThresholds, hi);
-  let hiResult = await costForTiers(buildDxGyTiers(hiThresholds, rates, rptFloor, 1), ctx);
+  let hiResult = await costForTiers(build(hiThresholds, 1), ctx);
   let guard = 0;
   while (hiResult.total > budget && guard < 40) {
     hi *= 2;
     hiThresholds = scaleThresholdsUp(baseThresholds, hi);
-    hiResult = await costForTiers(buildDxGyTiers(hiThresholds, rates, rptFloor, 1), ctx);
+    hiResult = await costForTiers(build(hiThresholds, 1), ctx);
     guard++;
   }
   let bestThresholds = hiThresholds, bestResult = hiResult;
   for (let i = 0; i < 25; i++) {
     const mid = (lo + hi) / 2;
     const midThresholds = scaleThresholdsUp(baseThresholds, mid);
-    const midResult = await costForTiers(buildDxGyTiers(midThresholds, rates, rptFloor, 1), ctx);
+    const midResult = await costForTiers(build(midThresholds, 1), ctx);
     if (midResult.total <= budget) { hi = mid; bestThresholds = midThresholds; bestResult = midResult; }
     else { lo = mid; }
   }
-  return { rawTiers: buildDxGyTiers(bestThresholds, rates, rptFloor, 1), rates, total: bestResult.total, mode: 'difficulty' };
+  return { rawTiers: build(bestThresholds, 1), total: bestResult.total, mode: 'difficulty' };
+}
+
+async function solveDxGyWithFloor(baseThresholds, budget, ctx, rptFloor) {
+  const rates = dxgyRates(baseThresholds.length);
+  const solved = await solveWithFloor(baseThresholds, budget, ctx, (th, k) => buildDxGyTiers(th, rates, rptFloor, k));
+  return { ...solved, rates };
+}
+
+// Guarantee: every tier guarantees at least `floor` per trip needed to reach it (amount / cumulative
+// trips), scaled up by k. Same two phases as DxGy: spend the budget on a richer guarantee at fixed
+// difficulty, or — only if even the floor overspends — raise the trip thresholds instead.
+function buildGuaranteeTiers(thresholds, floor, k) {
+  return thresholds.map(t => ({ min_trips: t, reward: t * floor * k }));
+}
+function solveGuaranteeWithFloor(baseThresholds, budget, ctx, floor) {
+  return solveWithFloor(baseThresholds, budget, ctx, (th, k) => buildGuaranteeTiers(th, floor, k));
+}
+
+// Rounds DOWN to clean amounts but never below the per-trip floor (so rounding can't push a tier
+// under it) and never to 0.
+function finalizeGuaranteeTiers(rawTiers, floor) {
+  return rawTiers.map(t => ({
+    min_trips: t.min_trips,
+    reward: Math.max(1, roundNiceFloor(t.reward), Math.ceil(floor * t.min_trips - 1e-9)),
+  }));
 }
 
 // Rounds DOWN to clean numbers (never up, so cost can't grow past what's budget-safe already)
@@ -2801,8 +2851,10 @@ document.getElementById('optimizeBtn').addEventListener('click', async () => {
       // budget, it's reported honestly below rather than silently hidden.
       roundedTiers = finalizeDxGyTiers(solvedRaw.rawTiers, solvedRaw.rates, rptFloor);
     } else {
-      const solvedRaw = await solveForBudget(INCENTIVE_TYPE, thresholds, budget, ctx);
-      roundedTiers = solvedRaw.tiers.map(t => ({ min_trips: t.min_trips, reward: roundNiceFloor(t.reward) }));
+      const guaranteeFloor = Math.max(0, parseFloat(document.getElementById('optGuaranteeFloorInput').value) || 0);
+      const solvedRaw = await solveGuaranteeWithFloor(thresholds, budget, ctx, guaranteeFloor);
+      dxgyMode = solvedRaw.mode;
+      roundedTiers = finalizeGuaranteeTiers(solvedRaw.rawTiers, guaranteeFloor);
     }
     const finalResult = await costForTiers(roundedTiers, ctx);
 
@@ -2821,7 +2873,7 @@ document.getElementById('optimizeBtn').addEventListener('click', async () => {
     document.getElementById('optProjectedCost').textContent = `${fmtMoney(finalResult.total)} ${currency} (objetivo: ${fmtMoney(budget)} ${currency})`;
     const rewardSumRow = document.getElementById('optRewardSumRow');
     rewardSumRow.style.display = INCENTIVE_TYPE === 'dxgy' ? '' : 'none';
-    document.getElementById('optTripsSumRow').style.display = INCENTIVE_TYPE === 'dxgy' ? '' : 'none';
+    document.getElementById('optTripsSumRow').style.display = INCENTIVE_TYPE === 'dxgy' || INCENTIVE_TYPE === 'guarantee' ? '' : 'none';
     document.getElementById('optTripsSum').textContent = fmtMoney(roundedTiers.length ? roundedTiers[roundedTiers.length - 1].min_trips : 0);
     document.getElementById('optRewardSum').textContent = `${fmtMoney(roundedTiers.reduce((a, t) => a + (t.reward || 0), 0))} ${currency}`;
     document.getElementById('optResultBox').style.display = '';
@@ -2829,11 +2881,12 @@ document.getElementById('optimizeBtn').addEventListener('click', async () => {
     document.getElementById('optResultBox').dataset.suggestedCohorts = JSON.stringify(targetCohortNames);
 
     let statusMsg = `Basado en ${pctResult.n_drv.toLocaleString()} drivers ${targetCohortNames.length ? `de: ${targetCohortNames.join(', ')}` : 'en el rango configurado'}.`;
+    const floorLabel = INCENTIVE_TYPE === 'guarantee' ? 'mínimo garantizado por trip' : 'piso de RPT';
     if (dxgyMode === 'difficulty') {
-      statusMsg += ' El reward al piso de RPT ya superaba el presupuesto, así que se subieron los trips requeridos (más difícil) en vez de bajar el reward.';
+      statusMsg += ` El monto al ${floorLabel} ya superaba el presupuesto, así que se subieron los trips requeridos (más difícil) en vez de bajar el monto.`;
     }
     if (finalResult.total > budget) {
-      statusMsg = `⚠ El piso de RPT no permite bajar más el reward, así que esta sugerencia queda ligeramente sobre el presupuesto (${fmtMoney(finalResult.total)} vs ${fmtMoney(budget)} ${currency}). Sube el presupuesto, baja el piso de RPT, o ajusta la dificultad a mano. ` + statusMsg;
+      statusMsg = `⚠ El ${floorLabel} no permite bajar más el monto, así que esta sugerencia queda ligeramente sobre el presupuesto (${fmtMoney(finalResult.total)} vs ${fmtMoney(budget)} ${currency}). Sube el presupuesto, baja el ${floorLabel}, o ajusta la dificultad a mano. ` + statusMsg;
     }
     document.getElementById('optStatus').textContent = statusMsg;
   } catch (err) {
