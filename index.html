@@ -625,12 +625,12 @@
 </div>
 
 <div class="modal-overlay" id="targetGroupModalOverlay">
-  <div class="modal-box" style="max-width:760px;">
+  <div class="modal-box" style="max-width:820px;">
     <div class="modal-header">
       <span>Target groups por cohort</span>
       <button type="button" id="closeTargetGroupModalBtn" class="modal-close">&times;</button>
     </div>
-    <div class="meta-line">Escribe una sola vez el Target Group (DTAC ID) de cada cohort. Al marcar un cohort en el reporte, el campo Target Group del módulo de Magellan se llena solo. Cada ciudad tiene su propia lista. Se guarda automáticamente en este navegador.</div>
+    <div class="meta-line">Escribe una sola vez el Target Group (DTAC ID) de cada cohort. Al marcar cohorts en el reporte, el campo Target Group del módulo de Magellan se llena solo. Cada ciudad tiene su propia lista. Se guarda automáticamente en este navegador.</div>
     <div class="top-controls">
       <div class="control-box">
         <div class="row-inline" style="margin:0;"><label>Ciudad</label>
@@ -642,10 +642,26 @@
       <thead><tr><th>Cohort</th><th>Target Group (DTAC ID)</th><th></th></tr></thead>
       <tbody id="tgTbody"></tbody>
     </table>
-    <div id="tgEmptyMsg" class="meta-line" style="display:none;">No hay cohorts para esta ciudad todavía. Sube el cohort snapshot (de esta ciudad) o agrégalos a mano abajo.</div>
     <div class="row-inline" style="margin-top:12px;">
-      <input type="text" id="tgNewCohortInput" placeholder="Nombre del cohort, ej. DiDi Loyal_low" style="width:260px;">
+      <input type="text" id="tgNewCohortInput" placeholder="Otro cohort, ej. Sharks_extra" style="width:240px;">
       <button type="button" id="tgAddCohortBtn" class="secondary" style="margin:0;">+ Agregar cohort</button>
+    </div>
+
+    <div class="section-label" style="margin-top:24px;">Target groups combinados</div>
+    <div class="meta-line">Un target group que junta varios cohorts (por ejemplo, los tres niveles de Low Contributors, cuyo remark es @LC). Se usa cuando marcas exactamente esos cohorts en el reporte.</div>
+    <table>
+      <thead><tr><th>Remark</th><th>Cohorts</th><th>Target Group (DTAC ID)</th><th></th></tr></thead>
+      <tbody id="tgComboTbody"></tbody>
+    </table>
+    <div id="tgComboEmpty" class="meta-line" style="display:none;">Todavía no hay combinados para esta ciudad.</div>
+    <div style="margin-top:12px; border:1px solid var(--line); background:#FBFAFF; border-radius:var(--radius-md); padding:10px 12px;">
+      <div class="meta-line" style="margin:0 0 8px 0;"><b>Nuevo combinado</b> — marca los cohorts que incluye (dale clic al nombre del segmento para marcar sus 3 niveles).</div>
+      <div id="tgComboPicker"></div>
+      <div class="row-inline" style="margin-top:8px;">
+        <span class="muted">Remark: <b id="tgComboRemark">-</b></span>
+        <input type="text" id="tgComboIdInput" placeholder="Target Group (DTAC ID)" style="width:190px;">
+        <button type="button" id="tgComboSaveBtn" style="margin:0;">Guardar combinado</button>
+      </div>
     </div>
     <div id="tgStatus" class="meta-line"></div>
   </div>
@@ -867,6 +883,7 @@ const MAGELLAN_TYPE_LABEL = { dxgy: 'DxGy', guarantee: 'Garantizado', multiplier
 const CART_STORAGE_KEY = 'dxgy_calc_magellan_cart_v1';
 const HISTORY_STORAGE_KEY = 'dxgy_calc_magellan_history_v1';
 const TARGET_GROUPS_STORAGE_KEY = 'dxgy_calc_target_groups_v1';
+const TARGET_GROUP_COMBOS_STORAGE_KEY = 'dxgy_calc_target_group_combos_v1';
 
 // City for the Magellan cart is never independently picked — it always mirrors the city
 // detected from the uploaded trips file, so a cart item can't accidentally target the wrong city.
@@ -1600,28 +1617,69 @@ document.getElementById('downloadCartBtn').addEventListener('click', () => {
 });
 
 // ---------- Target groups per cohort (per city) ----------
-// { [cityId]: { [cohortName]: dtacId } }. Written once in the modal; the Target Group field of the
-// Magellan module is then filled from whichever cohorts are checked in the report.
+// TARGET_GROUPS: { [cityId]: { [cohortName]: dtacId } } for single cohorts.
+// TARGET_GROUP_COMBOS: { [cityId]: [ { cohorts: [...], id } ] } for one target group that covers
+// several cohorts (matched only when exactly that set is checked in the report).
+// Written once in the modal; the Target Group field of the Magellan module is then filled from
+// whichever cohorts are checked.
 let TARGET_GROUPS = {};
-try {
-  const savedTg = JSON.parse(localStorage.getItem(TARGET_GROUPS_STORAGE_KEY));
-  if (savedTg && typeof savedTg === 'object' && !Array.isArray(savedTg)) TARGET_GROUPS = savedTg;
-} catch (e) { /* ignore corrupt storage */ }
+let TARGET_GROUP_COMBOS = {};
+function loadJsonObject(key) {
+  try {
+    const v = JSON.parse(localStorage.getItem(key));
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+  } catch (e) { return {}; }
+}
+TARGET_GROUPS = loadJsonObject(TARGET_GROUPS_STORAGE_KEY);
+TARGET_GROUP_COMBOS = loadJsonObject(TARGET_GROUP_COMBOS_STORAGE_KEY);
 
 function saveTargetGroups() {
-  try { localStorage.setItem(TARGET_GROUPS_STORAGE_KEY, JSON.stringify(TARGET_GROUPS)); return true; } catch (e) { return false; }
+  try {
+    localStorage.setItem(TARGET_GROUPS_STORAGE_KEY, JSON.stringify(TARGET_GROUPS));
+    localStorage.setItem(TARGET_GROUP_COMBOS_STORAGE_KEY, JSON.stringify(TARGET_GROUP_COMBOS));
+    return true;
+  } catch (e) { return false; }
+}
+
+// The cohorts are always the same 5 segments x 3 levels, so they're listed by default.
+const TG_SEGMENTS = ['Low Contributors', 'Gamers', 'DiDi Loyal', 'Long Distance', 'Sharks'];
+const TG_LEVELS = ['low', 'null', 'high'];
+const DEFAULT_TG_COHORTS = TG_SEGMENTS.flatMap(seg => TG_LEVELS.map(l => `${seg}_${l}`));
+
+function tgSortKey(name) {
+  const { segment, level } = parseCohort(name);
+  const si = TG_SEGMENTS.indexOf(segment);
+  const li = TG_LEVELS.indexOf(level);
+  return [si === -1 ? 99 : si, li === -1 ? 99 : li, name];
+}
+function tgCompare(a, b) {
+  const ka = tgSortKey(a), kb = tgSortKey(b);
+  return ka[0] - kb[0] || ka[1] - kb[1] || ka[2].localeCompare(kb[2]);
 }
 
 // Set while "Editar" re-checks an old incentive's cohorts, so its saved Target Group isn't overwritten.
 let SUPPRESS_TG_AUTOFILL = false;
 
+function sameCohortSet(a, b) {
+  return a.length === b.length && a.every(x => b.includes(x));
+}
+
 function applyTargetGroupAutofill() {
   const hint = document.getElementById('targetGroupHint');
   if (SUPPRESS_TG_AUTOFILL) return;
   const checked = [...document.querySelectorAll('.cohort-check:checked')].map(c => c.closest('tr').dataset.cohort);
-  const map = (DETECTED_CITY && TARGET_GROUPS[DETECTED_CITY]) || {};
   if (!checked.length) { hint.style.display = 'none'; return; }
 
+  // 1) A combined target group for exactly this set of cohorts wins.
+  const combo = ((DETECTED_CITY && TARGET_GROUP_COMBOS[DETECTED_CITY]) || []).find(c => c.id && sameCohortSet(c.cohorts, checked));
+  if (combo) {
+    document.getElementById('targetGroupInput').value = combo.id;
+    hint.style.display = 'none';
+    return;
+  }
+
+  // 2) Otherwise the single-cohort target groups.
+  const map = (DETECTED_CITY && TARGET_GROUPS[DETECTED_CITY]) || {};
   const missing = checked.filter(c => !map[c]);
   const ids = [...new Set(checked.filter(c => map[c]).map(c => map[c]))];
   if (ids.length === 1 && !missing.length) {
@@ -1631,7 +1689,9 @@ function applyTargetGroupAutofill() {
   }
   hint.style.display = '';
   if (ids.length > 1) {
-    hint.innerHTML = `<span class="error">Los cohorts marcados tienen target groups distintos (${ids.join(', ')}). Magellan toma uno por campaña: arma una campaña por cohort o escribe aquí el ID de un target group combinado.</span>`;
+    hint.innerHTML = `<span class="error">Los cohorts marcados tienen target groups distintos (${ids.join(', ')}). Magellan toma uno por campaña: arma una campaña por cohort, escribe aquí el ID a mano, o guarda un target group combinado para este grupo de cohorts en "🎯 Target groups".</span>`;
+  } else if (missing.length === checked.length && checked.length > 1) {
+    hint.innerHTML = `<span class="error">No hay un target group para esta combinación de cohorts. Guárdalo como combinado en "🎯 Target groups" o escríbelo aquí.</span>`;
   } else if (missing.length === checked.length) {
     hint.innerHTML = `<span class="error">Sin target group guardado para: ${missing.join(', ')}. Agrégalo en "🎯 Target groups".</span>`;
   } else {
@@ -1640,17 +1700,23 @@ function applyTargetGroupAutofill() {
 }
 
 function tgCohortsForCity(cityId) {
-  const names = new Set(Object.keys(TARGET_GROUPS[cityId] || {}));
+  const names = new Set(DEFAULT_TG_COHORTS);
+  Object.keys(TARGET_GROUPS[cityId] || {}).forEach(n => names.add(n));
+  (TARGET_GROUP_COMBOS[cityId] || []).forEach(c => c.cohorts.forEach(n => names.add(n)));
   COHORT_ROWS.filter(r => String(r.city) === String(cityId)).forEach(r => names.add(r.cohort));
-  return [...names].sort((a, b) => a.localeCompare(b));
+  return [...names].sort(tgCompare);
 }
 
 function renderTargetGroupCitySelect() {
   const sel = document.getElementById('tgCitySelect');
   const previous = sel.value || DETECTED_CITY || '';
-  const ids = [...new Set([...Object.keys(CITY_INFO), ...Object.keys(TARGET_GROUPS)])];
+  const ids = [...new Set([...Object.keys(CITY_INFO), ...Object.keys(TARGET_GROUPS), ...Object.keys(TARGET_GROUP_COMBOS)])];
   sel.innerHTML = ids.map(id => `<option value="${escHtml(id)}">${escHtml((CITY_INFO[id] && CITY_INFO[id].name) || id)}</option>`).join('');
   sel.value = ids.includes(previous) ? previous : (ids[0] || '');
+}
+
+function tgComboRemarkText(cohorts) {
+  return suggestRemark(cohorts) || '-';
 }
 
 function renderTargetGroupTable() {
@@ -1663,7 +1729,34 @@ function renderTargetGroupTable() {
       <td><input type="text" class="tg-input" data-cohort="${escHtml(n)}" value="${escHtml(map[n] || '')}" placeholder="1000977081" style="width:170px; text-align:left;"></td>
       <td><button type="button" class="secondary tg-remove-btn" data-cohort="${escHtml(n)}" style="padding:4px 10px; margin:0;" title="Borrar el target group de este cohort">✕</button></td>
     </tr>`).join('');
-  document.getElementById('tgEmptyMsg').style.display = names.length ? 'none' : '';
+
+  const combos = (TARGET_GROUP_COMBOS[cityId] || []);
+  document.getElementById('tgComboTbody').innerHTML = combos.map((c, i) => `
+    <tr>
+      <td><b>${escHtml(tgComboRemarkText(c.cohorts))}</b></td>
+      <td style="text-align:left; font-size:12px;">${escHtml(c.cohorts.join(' · '))}</td>
+      <td><input type="text" class="tg-combo-id" data-idx="${i}" value="${escHtml(c.id)}" style="width:170px; text-align:left;"></td>
+      <td><button type="button" class="secondary tg-combo-remove-btn" data-idx="${i}" style="padding:4px 10px; margin:0;" title="Borrar este combinado">✕</button></td>
+    </tr>`).join('');
+  document.getElementById('tgComboEmpty').style.display = combos.length ? 'none' : '';
+
+  // Picker: one row per segment, one checkbox per level (any extra cohorts group under their own segment).
+  const groups = {};
+  names.forEach(n => { (groups[parseCohort(n).segment] = groups[parseCohort(n).segment] || []).push(n); });
+  document.getElementById('tgComboPicker').innerHTML = Object.keys(groups).map(seg => `
+    <div style="display:flex; align-items:center; gap:14px; margin:3px 0; flex-wrap:wrap;">
+      <button type="button" class="secondary tg-seg-toggle" data-seg="${escHtml(seg)}" style="margin:0; padding:3px 12px; min-width:150px;">${escHtml(seg)}</button>
+      ${groups[seg].map(n => `<label style="display:flex; align-items:center; gap:4px; font-size:12.5px; font-weight:400;"><input type="checkbox" class="tg-combo-check" value="${escHtml(n)}"> ${escHtml(parseCohort(n).level || n)}</label>`).join('')}
+    </div>`).join('');
+  refreshComboRemark();
+}
+
+function comboCheckedCohorts() {
+  return [...document.querySelectorAll('.tg-combo-check:checked')].map(c => c.value);
+}
+function refreshComboRemark() {
+  const picked = comboCheckedCohorts();
+  document.getElementById('tgComboRemark').textContent = picked.length ? tgComboRemarkText(picked) : '-';
 }
 
 function openTargetGroupModal() {
@@ -1676,12 +1769,16 @@ function closeTargetGroupModal() {
   document.getElementById('targetGroupModalOverlay').classList.remove('open');
   applyTargetGroupAutofill();
 }
+function tgReportSaved(ok) {
+  document.getElementById('tgStatus').textContent = ok ? 'Guardado.' : 'No se pudo guardar (almacenamiento del navegador lleno).';
+}
 document.getElementById('openTargetGroupModalBtn').addEventListener('click', openTargetGroupModal);
 document.getElementById('closeTargetGroupModalBtn').addEventListener('click', closeTargetGroupModal);
 document.getElementById('targetGroupModalOverlay').addEventListener('click', (e) => {
   if (e.target.id === 'targetGroupModalOverlay') closeTargetGroupModal();
 });
 document.getElementById('tgCitySelect').addEventListener('change', renderTargetGroupTable);
+
 document.getElementById('tgTbody').addEventListener('input', (e) => {
   if (!e.target.classList.contains('tg-input')) return;
   const cityId = document.getElementById('tgCitySelect').value;
@@ -1690,7 +1787,7 @@ document.getElementById('tgTbody').addEventListener('input', (e) => {
   TARGET_GROUPS[cityId] = TARGET_GROUPS[cityId] || {};
   if (value) TARGET_GROUPS[cityId][cohort] = value;
   else delete TARGET_GROUPS[cityId][cohort];
-  document.getElementById('tgStatus').textContent = saveTargetGroups() ? 'Guardado.' : 'No se pudo guardar (almacenamiento del navegador lleno).';
+  tgReportSaved(saveTargetGroups());
 });
 document.getElementById('tgTbody').addEventListener('click', (e) => {
   const btn = e.target.closest('.tg-remove-btn');
@@ -1707,9 +1804,51 @@ document.getElementById('tgAddCohortBtn').addEventListener('click', () => {
   TARGET_GROUPS[cityId] = TARGET_GROUPS[cityId] || {};
   if (!(name in TARGET_GROUPS[cityId])) TARGET_GROUPS[cityId][name] = '';
   document.getElementById('tgNewCohortInput').value = '';
+  saveTargetGroups();
   renderTargetGroupTable();
   const input = [...document.querySelectorAll('#tgTbody .tg-input')].find(i => i.dataset.cohort === name);
   if (input) input.focus();
+});
+
+// Combined target groups
+document.getElementById('tgComboPicker').addEventListener('change', refreshComboRemark);
+document.getElementById('tgComboPicker').addEventListener('click', (e) => {
+  const btn = e.target.closest('.tg-seg-toggle');
+  if (!btn) return;
+  const boxes = [...btn.parentElement.querySelectorAll('.tg-combo-check')];
+  const allOn = boxes.every(b => b.checked);
+  boxes.forEach(b => { b.checked = !allOn; });
+  refreshComboRemark();
+});
+document.getElementById('tgComboSaveBtn').addEventListener('click', () => {
+  const cityId = document.getElementById('tgCitySelect').value;
+  const picked = comboCheckedCohorts();
+  const id = document.getElementById('tgComboIdInput').value.trim();
+  const status = document.getElementById('tgStatus');
+  if (picked.length < 2) { status.innerHTML = '<span class="error">Marca al menos 2 cohorts para un combinado (para uno solo usa la lista de arriba).</span>'; return; }
+  if (!id) { status.innerHTML = '<span class="error">Escribe el Target Group (DTAC ID) del combinado.</span>'; return; }
+  const list = TARGET_GROUP_COMBOS[cityId] = TARGET_GROUP_COMBOS[cityId] || [];
+  const existing = list.find(c => sameCohortSet(c.cohorts, picked));
+  if (existing) existing.id = id; else list.push({ cohorts: picked, id });
+  document.getElementById('tgComboIdInput').value = '';
+  tgReportSaved(saveTargetGroups());
+  renderTargetGroupTable();
+});
+document.getElementById('tgComboTbody').addEventListener('input', (e) => {
+  if (!e.target.classList.contains('tg-combo-id')) return;
+  const cityId = document.getElementById('tgCitySelect').value;
+  const combo = (TARGET_GROUP_COMBOS[cityId] || [])[Number(e.target.dataset.idx)];
+  if (!combo) return;
+  combo.id = e.target.value.trim();
+  tgReportSaved(saveTargetGroups());
+});
+document.getElementById('tgComboTbody').addEventListener('click', (e) => {
+  const btn = e.target.closest('.tg-combo-remove-btn');
+  if (!btn) return;
+  const cityId = document.getElementById('tgCitySelect').value;
+  (TARGET_GROUP_COMBOS[cityId] || []).splice(Number(btn.dataset.idx), 1);
+  saveTargetGroups();
+  renderTargetGroupTable();
 });
 
 // ---------- Cart modal ----------
