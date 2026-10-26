@@ -266,6 +266,7 @@
         <button type="button" class="switch-btn active" data-type="dxgy">DxGy</button>
         <button type="button" class="switch-btn" data-type="guarantee">Garantizado</button>
         <button type="button" class="switch-btn" data-type="multiplier">Multiplier</button>
+        <button type="button" class="switch-btn" data-type="checkin">Check in</button>
       </div>
     </div>
 
@@ -357,6 +358,23 @@
         <thead><tr><th>#</th><th>Trips de la etapa</th><th>% Multiplicador</th><th>Cap</th></tr></thead>
         <tbody id="multiplierTierTbody"></tbody>
       </table>
+    </div>
+
+    <div id="checkinTierWrap" style="display:none;">
+      <div class="section-label">Check in</div>
+      <div class="meta-line">Un DxGy multi-día: cada día que el driver cumple la condición dentro de las franjas cuenta como día completado, y el N-ésimo día completado paga el reward N. Task Validity Period = Franjas horarias; Event Period = Fechas incluidas (necesita 2 o más días de trips).</div>
+      <div class="row-inline"><label>Condición: trips por día</label>
+        <input type="number" id="checkinConditionInput" value="8" min="1" style="width:80px;">
+      </div>
+      <div class="add-remove">
+        <button id="addCheckinBtn" class="secondary">+ Día</button>
+        <button id="removeCheckinBtn" class="secondary">- Día</button>
+      </div>
+      <table id="checkinTierTable">
+        <thead><tr><th>Día completado</th><th>Reward</th></tr></thead>
+        <tbody id="checkinTierTbody"></tbody>
+      </table>
+      <div class="meta-line" style="margin-top:8px;">Reward máximo por driver (cumple todos los días): <b id="checkinRewardTotal">0</b></div>
     </div>
 
     <div id="optModuleWrap" style="margin-top:26px; padding-top:20px; border-top:2px solid var(--line);">
@@ -465,6 +483,8 @@
 
   <div class="panel">
     <div class="black-bar">4. SUBIR A MAGELLAN</div>
+    <div id="magellanDisabledNote" class="meta-line" style="display:none;">Check in no se puede subir a Magellan por archivo (plantilla Excel/CSV), así que esta función está deshabilitada para este tipo de incentivo. Cambia a DxGy, Garantizado o Multiplier para armar el carrito.</div>
+    <div id="magellanBody">
     <div class="meta-line">Arma la campaña con la configuración actual (tipo de incentivo, tiers) y agrégala al carrito.</div>
     <div class="top-controls">
       <div class="control-box">
@@ -528,6 +548,7 @@
     </div>
     <button id="addToCartBtn">🛒 Agregar incentivo al carrito</button>
     <div id="cartAddStatus" class="meta-line"></div>
+    </div>
   </div>
 </div>
 
@@ -919,7 +940,7 @@ function earliestEventPeriodStartHour(eventPeriodStr) {
 // 23:00 the day before). Falls back to today at the incentive type's example time when the
 // Reward Period or Event Period isn't set yet.
 function computePush1SendTimeDefault() {
-  const boilerplate = MAGELLAN_BOILERPLATE[INCENTIVE_TYPE];
+  const boilerplate = currentBoilerplate();
   const rewardStart = (rewardPeriodPicker && rewardPeriodPicker.selectedDates.length)
     ? rewardPeriodPicker.selectedDates[0] : null;
   const startHour = earliestEventPeriodStartHour(document.getElementById('eventPeriodInput').value.trim());
@@ -937,12 +958,18 @@ function refreshPush1SendTimeDefault() {
   push1SendTimePicker.setDate(computePush1SendTimeDefault(), true);
 }
 
+// Check in has no Magellan template of its own (its Magellan module is disabled), so the shared
+// push/title defaults fall back to DxGy's while that type is selected.
+function currentBoilerplate() {
+  return MAGELLAN_BOILERPLATE[INCENTIVE_TYPE] || MAGELLAN_BOILERPLATE.dxgy;
+}
+
 function refreshTitleDefault() {
-  document.getElementById('titleInput').value = MAGELLAN_BOILERPLATE[INCENTIVE_TYPE].title || '';
+  document.getElementById('titleInput').value = currentBoilerplate().title || '';
 }
 
 function refreshPush1ContentDefault() {
-  document.getElementById('push1ContentInput').value = MAGELLAN_BOILERPLATE[INCENTIVE_TYPE].push1_content || '';
+  document.getElementById('push1ContentInput').value = currentBoilerplate().push1_content || '';
 }
 
 // Push 2 is optional — off by default, added/removed like a tier or hour-range row. When shown,
@@ -958,7 +985,7 @@ function initPush2SendTimePicker() {
 }
 
 function refreshPush2Defaults() {
-  const boilerplate = MAGELLAN_BOILERPLATE[INCENTIVE_TYPE];
+  const boilerplate = currentBoilerplate();
   push2SendTimePicker.setDate(todayAtTimeOf(boilerplate.push2_send_time, '06:00'), true);
   document.getElementById('push2ContentInput').value = boilerplate.push2_content || '';
 }
@@ -1604,7 +1631,7 @@ import numpy as np
 import json
 
 def _build_per_drv(trips_json, cohort_json, city, hour_offset, snapshot_ref_date,
-                    hour_ranges_json, selected_dates_json):
+                    hour_ranges_json, selected_dates_json, by_day=False):
     """Shared scoping: hour-shift, date filter, merge with cohort, hour-range filter, per-driver
     trips/earnings totals. Returns (per_drv, cohort_snapshot, meta_dict) or an error string —
     used by both the forecast pipeline and the budget-optimizer percentile lookup so the two
@@ -1652,7 +1679,9 @@ def _build_per_drv(trips_json, cohort_json, city, hour_offset, snapshot_ref_date
             mask |= (trips_cohort['hour'] >= int(r[0])) & (trips_cohort['hour'] <= int(r[1]))
         scoped = trips_cohort[mask]
 
-    per_drv = scoped.groupby(['drv_id', 'cohort'], as_index=False).agg(
+    # by_day keeps one row per driver AND date (needed by Check in, which pays per day completed).
+    group_cols = ['drv_id', 'cohort', 'date'] if by_day else ['drv_id', 'cohort']
+    per_drv = scoped.groupby(group_cols, as_index=False).agg(
         total_trips=('trips', 'sum'), total_earnings=('earnings', 'sum')
     )
 
@@ -1672,7 +1701,7 @@ def run_dxgy_pipeline(trips_json, cohort_json, city, hour_offset, snapshot_ref_d
     tiers = json.loads(tiers_json)
 
     built = _build_per_drv(trips_json, cohort_json, city, hour_offset, snapshot_ref_date,
-                            hour_ranges_json, selected_dates_json)
+                            hour_ranges_json, selected_dates_json, by_day=(incentive_type == 'checkin'))
     if isinstance(built, str):
         return json.dumps({"error": built})
     per_drv, cohort_snapshot, meta = built
@@ -1684,7 +1713,19 @@ def run_dxgy_pipeline(trips_json, cohort_json, city, hour_offset, snapshot_ref_d
     else:
         per_drv['projected_trips'] = np.floor(per_drv['total_trips'] * float(incrementality_factor)).astype(int)
 
-        if incentive_type == 'guarantee':
+        if incentive_type == 'checkin':
+            # Check in: a multi-day DxGy. A day counts as completed when the driver reaches
+            # condition trips inside the franjas that day; the Nth completed day pays
+            # rewards[N-1] (rewards climb with the number of days completed, they are not tied to
+            # a calendar date), and a driver collects every completed day's reward.
+            condition = float(tiers['condition'])
+            rewards = [float(r) for r in tiers['rewards']]
+            per_drv['qualified'] = (per_drv['projected_trips'] >= condition).astype(int)
+            per_drv = per_drv.groupby(['drv_id', 'cohort'], as_index=False).agg(days_done=('qualified', 'sum'))
+            cum_rewards = np.concatenate([[0.0], np.cumsum(rewards)])
+            per_drv['payout'] = cum_rewards[np.minimum(per_drv['days_done'].to_numpy(), len(rewards))]
+
+        elif incentive_type == 'guarantee':
             sorted_tiers = sorted(tiers, key=lambda t: t['min_trips'])
             # Guarantee: the highest tier reached sets a TOTAL guaranteed amount (tiers replace,
             # never sum); payout is the top-up needed to reach it, never negative.
@@ -1734,8 +1775,13 @@ def run_dxgy_pipeline(trips_json, cohort_json, city, hour_offset, snapshot_ref_d
 
         # Per-tier breakdown (feeds the "Detalle por tier" panel). Computed separately from the
         # payouts above so those stay untouched; the per-tier burns add up to total payout.
-        n_proj = per_drv['projected_trips'].to_numpy()
-        if incentive_type == 'multiplier':
+        if incentive_type == 'checkin':
+            n_days = per_drv['days_done'].to_numpy()
+            reach_cols = [n_days >= i + 1 for i in range(len(rewards))]
+            burn_cols = [np.where(reach_cols[i], r, 0.0) for i, r in enumerate(rewards)]
+            tier_defs = [{'day': i + 1, 'condition': condition, 'reward': r} for i, r in enumerate(rewards)]
+        elif incentive_type == 'multiplier':
+            n_proj = per_drv['projected_trips'].to_numpy()
             cum = 0
             avg_e = np.where(per_drv['total_trips'] > 0, per_drv['total_earnings'] / per_drv['total_trips'], 0.0)
             reach_cols, burn_cols = [], []
@@ -1746,6 +1792,7 @@ def run_dxgy_pipeline(trips_json, cohort_json, city, hour_offset, snapshot_ref_d
                 reach_cols.append(reached)
                 burn_cols.append(np.where(reached, np.minimum(t['pct'] / 100.0 * avg_e * t['trips'], t['cap']), 0.0))
         else:
+            n_proj = per_drv['projected_trips'].to_numpy()
             ordered = sorted(tiers, key=lambda t: t['min_trips'])
             reach_cols = [n_proj >= t['min_trips'] for t in ordered]
             for t in ordered:
@@ -2391,6 +2438,33 @@ document.addEventListener('input', (e) => {
   }
 });
 
+// ---------- Check in rows: reward paid for the Nth completed day ----------
+let checkinDayCount = 0;
+function refreshCheckinTotal() {
+  const el = document.getElementById('checkinRewardTotal');
+  if (!el) return;
+  const sum = [...document.querySelectorAll('#checkinTierTbody .checkin-reward')].reduce((a, i) => a + (parseFloat(i.value) || 0), 0);
+  el.textContent = fmtMoney(sum) + ' ' + (document.getElementById('currencyInput').value || '');
+}
+function addCheckinRow(reward) {
+  checkinDayCount++;
+  const tr = document.createElement('tr');
+  tr.className = 'tier-row';
+  tr.innerHTML = `
+    <td class="tiernum">${checkinDayCount}</td>
+    <td><input type="number" class="checkin-reward" value="${reward ?? 0}"></td>
+  `;
+  document.getElementById('checkinTierTbody').appendChild(tr);
+  refreshCheckinTotal();
+}
+function removeCheckinRow() {
+  const tbody = document.getElementById('checkinTierTbody');
+  if (tbody.children.length > 1) { tbody.removeChild(tbody.lastChild); checkinDayCount--; refreshCheckinTotal(); }
+}
+document.addEventListener('input', (e) => {
+  if (e.target.closest && e.target.closest('#checkinTierTbody, #currencyInput')) refreshCheckinTotal();
+});
+
 // ---------- Incentive type switch ----------
 let INCENTIVE_TYPE = 'dxgy';
 document.querySelectorAll('#incentiveTypeSwitch .switch-btn').forEach(btn => {
@@ -2400,6 +2474,11 @@ document.querySelectorAll('#incentiveTypeSwitch .switch-btn').forEach(btn => {
     document.getElementById('dxgyTierWrap').style.display = INCENTIVE_TYPE === 'dxgy' ? '' : 'none';
     document.getElementById('guaranteeTierWrap').style.display = INCENTIVE_TYPE === 'guarantee' ? '' : 'none';
     document.getElementById('multiplierTierWrap').style.display = INCENTIVE_TYPE === 'multiplier' ? '' : 'none';
+    const isCheckin = INCENTIVE_TYPE === 'checkin';
+    document.getElementById('checkinTierWrap').style.display = isCheckin ? '' : 'none';
+    document.getElementById('optModuleWrap').style.display = isCheckin ? 'none' : '';
+    document.getElementById('magellanBody').style.display = isCheckin ? 'none' : '';
+    document.getElementById('magellanDisabledNote').style.display = isCheckin ? '' : 'none';
     document.getElementById('optRptFloorBox').style.display = INCENTIVE_TYPE === 'dxgy' ? '' : 'none';
     document.getElementById('optGuaranteeFloorBox').style.display = INCENTIVE_TYPE === 'guarantee' ? '' : 'none';
     refreshPush1SendTimeDefault();
@@ -2423,6 +2502,8 @@ document.getElementById('addGuaranteeTierBtn').addEventListener('click', () => a
 document.getElementById('removeGuaranteeTierBtn').addEventListener('click', removeGuaranteeTierRow);
 document.getElementById('addMultiplierTierBtn').addEventListener('click', () => addMultiplierTierRow());
 document.getElementById('removeMultiplierTierBtn').addEventListener('click', removeMultiplierTierRow);
+document.getElementById('addCheckinBtn').addEventListener('click', () => addCheckinRow());
+document.getElementById('removeCheckinBtn').addEventListener('click', removeCheckinRow);
 
 // Defaults matching the original DxGyIncentive example
 addRangeRow(0, 23);
@@ -2440,6 +2521,9 @@ addGuaranteeTierRow(20, 80000);
 // Defaults matching Juan's Multiplier example (stage 1: 9 trips -> 20% cap 12; stage 2: 4 more trips -> 30% cap 12)
 addMultiplierTierRow(9, 20, 12);
 addMultiplierTierRow(4, 30, 12);
+
+// Defaults matching Juan's Check in example (8 trips a day; days completed pay 16 / 20 / 30 / 40)
+[16, 20, 30, 40].forEach(r => addCheckinRow(r));
 
 refreshEventPeriodField();
 refreshPush1SendTimeDefault();
@@ -2935,6 +3019,17 @@ async function runCalculation() {
     return;
   }
 
+  if (INCENTIVE_TYPE === 'checkin') {
+    if (selectedDates.length < 2) {
+      document.getElementById('calcStatus').innerHTML = '<span class="error">Check in necesita 2 o más días: incluye al menos 2 fechas en "Fechas incluidas" (y sube trips de varios días).</span>';
+      return;
+    }
+    if (!(parseFloat(document.getElementById('checkinConditionInput').value) > 0)) {
+      document.getElementById('calcStatus').innerHTML = '<span class="error">La condición (trips por día) debe ser mayor a 0.</span>';
+      return;
+    }
+  }
+
   document.getElementById('calcStatus').textContent = 'Calculando...';
   document.getElementById('calcBtn').disabled = true;
 
@@ -2943,7 +3038,12 @@ async function runCalculation() {
     parseInt(tr.querySelector('.range-end').value) || 0,
   ]);
   let tiers;
-  if (INCENTIVE_TYPE === 'guarantee') {
+  if (INCENTIVE_TYPE === 'checkin') {
+    tiers = {
+      condition: parseFloat(document.getElementById('checkinConditionInput').value) || 0,
+      rewards: [...document.querySelectorAll('#checkinTierTbody .checkin-reward')].map(i => parseFloat(i.value) || 0),
+    };
+  } else if (INCENTIVE_TYPE === 'guarantee') {
     tiers = readCumulativeTiers('#guaranteeTierTbody', '.guarantee-tier-min', '.guarantee-tier-amount');
   } else if (INCENTIVE_TYPE === 'multiplier') {
     tiers = [...document.querySelectorAll('#multiplierTierTbody tr')].map(tr => ({
@@ -2986,7 +3086,10 @@ async function runCalculation() {
     renderMeta(result.meta);
     applyPendingCohorts();
 
-    document.getElementById('calcStatus').textContent = 'Cálculo actualizado.';
+    document.getElementById('calcStatus').textContent = 'Cálculo actualizado.' +
+      (INCENTIVE_TYPE === 'checkin' && tiers.rewards.length > selectedDates.length
+        ? ` Ojo: configuraste ${tiers.rewards.length} días de reward pero solo hay ${selectedDates.length} fechas incluidas, así que los últimos no se pueden alcanzar.`
+        : '');
   } catch (err) {
     document.getElementById('calcStatus').innerHTML = `<span class="error">Error: ${err.message}</span>`;
   }
@@ -3094,11 +3197,15 @@ function renderTierBreakdown() {
   });
   const totalBurn = burn.reduce((a, b) => a + b, 0);
 
-  head.innerHTML = r.incentive_type === 'multiplier'
+  head.innerHTML = r.incentive_type === 'checkin'
+    ? '<tr><th>Día completado</th><th>Condición</th><th>Reward</th><th># drv que lo alcanzan</th><th>Win rate (% del cohort)</th><th>% de activos</th><th>Burn</th><th>% del burn</th></tr>'
+    : r.incentive_type === 'multiplier'
     ? '<tr><th>Tier</th><th>Trips de la etapa</th><th>% / Cap</th><th># drv que lo alcanzan</th><th>Win rate (% del cohort)</th><th>% de activos</th><th>Burn</th><th>% del burn</th></tr>'
     : `<tr><th>Tier</th><th>Trips (acumulados)</th><th>${r.incentive_type === 'guarantee' ? 'Monto garantizado' : 'Reward'}</th><th># drv que lo alcanzan</th><th>Win rate (% del cohort)</th><th>% de activos</th><th>Burn</th><th>% del burn</th></tr>`;
   body.innerHTML = r.tier_defs.map((d, i) => {
-    const mid = r.incentive_type === 'multiplier'
+    const mid = r.incentive_type === 'checkin'
+      ? `<td>${d.condition} trips/día</td><td>${fmtMoney(d.reward)} ${currency}</td>`
+      : r.incentive_type === 'multiplier'
       ? `<td>${d.trips}</td><td>${d.pct}% / ${fmtMoney(d.cap)}</td>`
       : `<td>${d.cum_trips}</td><td>${fmtMoney(d.reward)} ${currency}</td>`;
     return `<tr><td>${i + 1}</td>${mid}<td>${winners[i].toLocaleString()}</td>
@@ -3109,7 +3216,8 @@ function renderTierBreakdown() {
   }).join('') + `<tr><td colspan="${r.incentive_type === 'multiplier' ? 6 : 6}" style="text-align:right; font-weight:700;">Total</td><td>${fmtMoney(totalBurn)} ${currency}</td><td>${totalBurn ? '100.0%' : '-'}</td></tr>`;
   note.textContent = r.incentive_type === 'guarantee'
     ? 'Garantizado: "lo alcanzan" cuenta drivers que llegan al tier; el burn (monto garantizado menos lo ya ganado) se atribuye al tier más alto que alcanzó cada driver.'
-    : (r.incentive_type === 'multiplier' ? 'Multiplier: el burn de cada etapa es el premio que pagan los drivers que la completan.' : '');
+    : (r.incentive_type === 'multiplier' ? 'Multiplier: el burn de cada etapa es el premio que pagan los drivers que la completan.'
+    : (r.incentive_type === 'checkin' ? 'Check in: "lo alcanzan" cuenta los drivers que cumplieron la condición al menos ese número de días; el burn es el reward de ese día por cada uno de ellos.' : ''));
 }
 
 function updateSubtotal() {
