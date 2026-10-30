@@ -351,6 +351,12 @@
 
     <div id="multiplierTierWrap" style="display:none;">
       <div class="section-label">Tiers Multiplier</div>
+      <div class="row-inline"><label>Regla de pago</label>
+        <select id="multiplierModeSelect">
+          <option value="per_trip">Cada viaje de la etapa paga el % (aunque no se complete)</option>
+          <option value="complete">Solo cuando se completa la etapa</option>
+        </select>
+      </div>
       <div class="add-remove">
         <button id="addMultiplierTierBtn" class="secondary">+ Tier</button>
         <button id="removeMultiplierTierBtn" class="secondary">- Tier</button>
@@ -1346,6 +1352,7 @@ document.getElementById('addToCartBtn').addEventListener('click', () => {
       tiers,
       hourRanges,
       incrementality: parseFloat(document.getElementById('incrementalityInput').value) || 1,
+      multiplierMode: INCENTIVE_TYPE === 'multiplier' ? multiplierMode() : null,
       cohorts: checkedCohorts,
       forecastBurn,
       winRate,
@@ -1539,6 +1546,7 @@ function loadIncentiveIntoEditor(rec) {
   snap.hourRanges.forEach(h => addRangeRow(h[0], h[1]));
   document.getElementById('incrementalityInput').value = snap.incrementality;
   setTiersForType(rec.incentiveType, snap.tiers);
+  if (rec.incentiveType === 'multiplier') document.getElementById('multiplierModeSelect').value = snap.multiplierMode || 'complete';
 
   const p = parseRewardPeriod(rec.rewardPeriod);
   rewardPeriodPicker.setDate(p.start ? (p.end && p.end !== p.start ? [p.start, p.end] : [p.start]) : [], true);
@@ -1981,7 +1989,7 @@ def _build_per_drv(trips_json, cohort_json, city, hour_offset, snapshot_ref_date
 
 def run_dxgy_pipeline(trips_json, cohort_json, city, hour_offset, snapshot_ref_date,
                        hour_ranges_json, tiers_json, incrementality_factor,
-                       selected_dates_json, incentive_type='dxgy'):
+                       selected_dates_json, incentive_type='dxgy', multiplier_mode='complete'):
     tiers = json.loads(tiers_json)
 
     built = _build_per_drv(trips_json, cohort_json, city, hour_offset, snapshot_ref_date,
@@ -2029,15 +2037,21 @@ def run_dxgy_pipeline(trips_json, cohort_json, city, hour_offset, snapshot_ref_d
             # cumulative threshold. Stages unlock in order; completing one pays pct% of the
             # earnings of THAT stage's trips, capped per stage. Earnings-per-trip is estimated
             # from the driver's own average since we don't have per-trip earnings.
+            # multiplier_mode 'complete': a stage pays only once all of its trips are done.
+            # multiplier_mode 'per_trip': every trip that falls inside a stage earns the % (capped
+            # per stage) even if the driver doesn't finish that stage.
             def multiplier_payout_for(n, avg_earnings_per_trip):
                 total = 0.0
-                completed_trips = 0
+                prev_cum = 0
                 for t in tiers:
-                    completed_trips += t['trips']
-                    if n < completed_trips:
+                    if multiplier_mode == 'per_trip':
+                        trips_in_stage = min(max(n - prev_cum, 0), t['trips'])
+                    else:
+                        trips_in_stage = t['trips'] if n >= prev_cum + t['trips'] else 0
+                    if trips_in_stage <= 0:
                         break
-                    band_earnings = avg_earnings_per_trip * t['trips']
-                    total += min((t['pct'] / 100.0) * band_earnings, t['cap'])
+                    total += min((t['pct'] / 100.0) * avg_earnings_per_trip * trips_in_stage, t['cap'])
+                    prev_cum += t['trips']
                 return total
 
             avg_earnings = np.where(
@@ -2070,11 +2084,17 @@ def run_dxgy_pipeline(trips_json, cohort_json, city, hour_offset, snapshot_ref_d
             avg_e = np.where(per_drv['total_trips'] > 0, per_drv['total_earnings'] / per_drv['total_trips'], 0.0)
             reach_cols, burn_cols = [], []
             for t in tiers:
+                prev_cum = cum
                 cum += t['trips']
                 tier_defs.append({'cum_trips': cum, 'trips': t['trips'], 'pct': t['pct'], 'cap': t['cap']})
-                reached = n_proj >= cum
+                if multiplier_mode == 'per_trip':
+                    in_stage = np.clip(n_proj - prev_cum, 0, t['trips'])
+                    reached = in_stage > 0
+                else:
+                    in_stage = np.where(n_proj >= cum, t['trips'], 0)
+                    reached = n_proj >= cum
                 reach_cols.append(reached)
-                burn_cols.append(np.where(reached, np.minimum(t['pct'] / 100.0 * avg_e * t['trips'], t['cap']), 0.0))
+                burn_cols.append(np.minimum(t['pct'] / 100.0 * avg_e * in_stage, t['cap']))
         else:
             n_proj = per_drv['projected_trips'].to_numpy()
             ordered = sorted(tiers, key=lambda t: t['min_trips'])
@@ -2179,7 +2199,7 @@ def opt_prepare(trips_json, cohort_json, city, hour_offset, snapshot_ref_date,
     })
 
 
-def opt_cost(tiers_json, incentive_type):
+def opt_cost(tiers_json, incentive_type, multiplier_mode='complete'):
     tiers = json.loads(tiers_json)
     n = _OPT['projected']
     if incentive_type == 'guarantee':
@@ -2189,12 +2209,14 @@ def opt_cost(tiers_json, incentive_type):
         payout = np.clip(amount - _OPT['earnings'], 0, None)
     elif incentive_type == 'multiplier':
         payout = np.zeros(len(n))
-        completed_trips = 0
+        prev_cum = 0
         for t in tiers:
-            completed_trips += t['trips']
-            band_earnings = _OPT['avg_earnings'] * t['trips']
-            tier_pay = np.minimum((t['pct'] / 100.0) * band_earnings, float(t['cap']))
-            payout = payout + np.where(n >= completed_trips, tier_pay, 0.0)
+            if multiplier_mode == 'per_trip':
+                in_stage = np.clip(n - prev_cum, 0, t['trips'])
+            else:
+                in_stage = np.where(n >= prev_cum + t['trips'], t['trips'], 0)
+            payout = payout + np.minimum((t['pct'] / 100.0) * _OPT['avg_earnings'] * in_stage, float(t['cap']))
+            prev_cum += t['trips']
     else:
         payout = np.zeros(len(n))
         for t in sorted(tiers, key=lambda t: t['min_trips']):
@@ -2608,6 +2630,10 @@ function addGuaranteeTierRow(minTrips, amount) {
 function removeGuaranteeTierRow() {
   const tbody = document.getElementById('guaranteeTierTbody');
   if (tbody.children.length > 1) { tbody.removeChild(tbody.lastChild); guaranteeTierCount--; renumber('.tiernum', '#guaranteeTierTbody'); refreshTierMetrics(); }
+}
+
+function multiplierMode() {
+  return document.getElementById('multiplierModeSelect').value;
 }
 
 // ---------- Multiplier tier rows (separate table so switching type never loses either config) ----------
@@ -3090,7 +3116,7 @@ const nextFrame = () => new Promise(r => setTimeout(r, 0));
 
 async function costForTiers(tiers, ctx) {
   const fn = pyodide.globals.get('opt_cost');
-  const total = fn(JSON.stringify(tiers), ctx.incentiveType);
+  const total = fn(JSON.stringify(tiers), ctx.incentiveType, ctx.multiplierMode);
   fn.destroy();
   OPT_PROGRESS.steps++;
   if (OPT_PROGRESS.steps % 3 === 0) { renderOptProgress(); await nextFrame(); }
@@ -3196,7 +3222,7 @@ document.getElementById('optimizeBtn').addEventListener('click', async () => {
     const nTiers = INCENTIVE_TYPE === 'multiplier' ? 2 : 3;
     const thresholds = thresholdsFromBase(pctResult.percentiles[50], nTiers);
 
-    const ctx = { incentiveType: INCENTIVE_TYPE };
+    const ctx = { incentiveType: INCENTIVE_TYPE, multiplierMode: multiplierMode() };
     document.getElementById('optProgressLabel').textContent = 'Calibrando presupuesto...';
     renderOptProgress();
     await nextFrame();
@@ -3358,14 +3384,15 @@ async function runCalculation() {
       JSON.stringify(tiers),
       incrementality,
       JSON.stringify(selectedDates),
-      INCENTIVE_TYPE
+      INCENTIVE_TYPE,
+      multiplierMode()
     );
     const result = JSON.parse(resultJson);
     fn.destroy();
 
     if (result.error) throw new Error(result.error);
 
-    LAST_TIER_RESULT = { report: result.report, tier_defs: result.tier_defs || [], tier_stats: result.tier_stats || {}, incentive_type: INCENTIVE_TYPE };
+    LAST_TIER_RESULT = { report: result.report, tier_defs: result.tier_defs || [], tier_stats: result.tier_stats || {}, incentive_type: INCENTIVE_TYPE, multiplier_mode: multiplierMode() };
     renderReport(result.report, currency);
     renderMeta(result.meta);
     applyPendingCohorts();
@@ -3500,7 +3527,7 @@ function renderTierBreakdown() {
   }).join('') + `<tr><td colspan="${r.incentive_type === 'multiplier' ? 6 : 6}" style="text-align:right; font-weight:700;">Total</td><td>${fmtMoney(totalBurn)} ${currency}</td><td>${totalBurn ? '100.0%' : '-'}</td></tr>`;
   note.textContent = r.incentive_type === 'guarantee'
     ? 'Garantizado: "lo alcanzan" cuenta drivers que llegan al tier; el burn (monto garantizado menos lo ya ganado) se atribuye al tier más alto que alcanzó cada driver.'
-    : (r.incentive_type === 'multiplier' ? 'Multiplier: el burn de cada etapa es el premio que pagan los drivers que la completan.'
+    : (r.incentive_type === 'multiplier' ? (r.multiplier_mode === 'per_trip' ? 'Multiplier (pago por viaje): "lo alcanzan" cuenta los drivers con al menos 1 trip dentro de la etapa; el burn es el % sobre los trips que hicieron en ella, con el tope de la etapa.' : 'Multiplier (al completar): el burn de cada etapa es el premio que pagan los drivers que la completan.')
     : (r.incentive_type === 'checkin' ? 'Check in: "lo alcanzan" cuenta los drivers que cumplieron la condición al menos ese número de días; el burn es el reward de ese día por cada uno de ellos.' : ''));
 }
 
