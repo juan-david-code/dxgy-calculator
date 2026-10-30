@@ -815,6 +815,7 @@ function rebuildCityInfoFromTable() {
   saveCityInfo();
   // If the currently loaded trips' city was just (re)configured, refresh the auto-filled fields.
   if (DETECTED_CITY && CITY_INFO[DETECTED_CITY]) applyCityInfoToForm(DETECTED_CITY);
+  if (TRIPS_ROWS.length) rebuildDateFilter(true);
   updateMagellanCityDisplay();
   renderTncCitySelect();
 }
@@ -1936,8 +1937,13 @@ def _build_per_drv(trips_json, cohort_json, city, hour_offset, snapshot_ref_date
     if trips_raw.empty:
         return "No hay filas de trips cargadas."
 
-    trips_raw['hour'] = ((trips_raw['hour'].astype(int) + int(hour_offset)) % 24 + 24) % 24
+    # The file's date/hour are in the warehouse timezone (e.g. UTC+8). Convert both to the city's
+    # local time together: shifting only the hour would leave a local 12:00 of Saturday labeled
+    # as Friday (file date 24 + file hour 1 = local Friday 12:00 for Lima, offset -13).
     trips_raw['date'] = trips_raw['date'].astype(str)
+    local_dt = pd.to_datetime(trips_raw['date']) + pd.to_timedelta(trips_raw['hour'].astype(int) + int(hour_offset), unit='h')
+    trips_raw['hour'] = local_dt.dt.hour
+    trips_raw['date'] = local_dt.dt.strftime('%Y-%m-%d')
 
     if selected_dates:
         trips_raw = trips_raw[trips_raw['date'].isin(selected_dates)]
@@ -2416,17 +2422,47 @@ document.querySelectorAll('#targetModeSwitch .switch-btn').forEach(btn => {
 });
 
 // ---------- Date filter (constrained to whatever dates the uploaded trips actually span) ----------
-function buildDateCheckboxes(dates) {
+// Dates in the filter are the city's LOCAL dates (file date + hour shifted by the city's offset), the
+// same ones the calculation uses. A file covers one warehouse day, which spans two local days, so a
+// local day can be only partly covered: it is labeled "(N/24 h)" until you load the adjacent file.
+function localDateEntries() {
+  const offset = (CITY_INFO[DETECTED_CITY] && CITY_INFO[DETECTED_CITY].hour_offset) || 0;
+  const seen = new Set();
+  const byDate = new Map();
+  for (const r of TRIPS_ROWS) {
+    const key = r.date + '|' + r.hour;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const [y, m, d] = r.date.split('-').map(Number);
+    const local = new Date(Date.UTC(y, m - 1, d, r.hour + offset));
+    const ld = local.toISOString().slice(0, 10);
+    if (!byDate.has(ld)) byDate.set(ld, new Set());
+    byDate.get(ld).add(local.getUTCHours());
+  }
+  return [...byDate.keys()].sort().map(date => ({ date, hours: byDate.get(date).size }));
+}
+
+function buildDateCheckboxes(entries, previouslyChecked) {
   const box = document.getElementById('dateFilterBox');
   box.innerHTML = '';
-  dates.forEach((d, i) => {
+  entries.forEach((e, i) => {
     const label = document.createElement('label');
     label.style.cssText = 'display:flex; align-items:center; gap:4px; font-size:12px; font-weight:400; min-width:0;';
-    label.innerHTML = `<input type="checkbox" class="date-check" id="dchk_${i}" data-date="${d}" checked> ${d}`;
+    const checked = previouslyChecked ? previouslyChecked.has(e.date) : true;
+    const partial = e.hours < 24 ? ` <span class="muted">(${e.hours}/24 h)</span>` : '';
+    label.innerHTML = `<input type="checkbox" class="date-check" id="dchk_${i}" data-date="${e.date}" ${checked ? 'checked' : ''}> ${e.date}${partial}`;
     box.appendChild(label);
   });
   box.querySelectorAll('.date-check').forEach(chk => chk.addEventListener('change', updateDateFilterSummary));
   updateDateFilterSummary();
+}
+
+function rebuildDateFilter(keepSelection) {
+  const entries = localDateEntries();
+  buildDateCheckboxes(entries, keepSelection ? new Set(getSelectedDates()) : null);
+  if (entries.length) {
+    document.getElementById('windowVal').textContent = `${entries[0].date} a ${entries[entries.length - 1].date}`;
+  }
 }
 
 function getSelectedDates() {
@@ -2483,7 +2519,6 @@ document.getElementById('tripsInput').addEventListener('change', async (e) => {
 
     const dates = TRIPS_ROWS.map(r => r.date).sort();
     const dmin = dates[0], dmax = dates[dates.length - 1];
-    const uniqueDates = [...new Set(dates)].sort();
 
     document.getElementById('windowVal').textContent = `${dmin} a ${dmax}`;
     document.getElementById('snapshotRefInput').value = dmin;
@@ -2500,7 +2535,7 @@ document.getElementById('tripsInput').addEventListener('change', async (e) => {
       openCityModal();
     }
 
-    buildDateCheckboxes(uniqueDates);
+    rebuildDateFilter(false);
 
     document.getElementById('tripsStatus').textContent =
       `Cargados ${files.length} archivo(s) | ${TRIPS_ROWS.length.toLocaleString()} filas | ciudad ${DETECTED_CITY} | ventana ${dmin} a ${dmax}`;
