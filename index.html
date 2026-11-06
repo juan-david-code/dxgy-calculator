@@ -596,6 +596,11 @@
       <button id="clearCartBtn" class="secondary">Vaciar carrito</button>
       <button id="downloadCartBtn">⬇ Consolidar y descargar plantilla</button>
     </div>
+    <div class="row-inline" style="margin-top:8px;">
+      <button type="button" id="choosePlanFolderBtn" class="secondary">📁 Elegir carpeta del plan</button>
+      <span id="planFolderLabel" class="muted"></span>
+    </div>
+    <div class="meta-line">Al descargar, se guarda también una copia del plan (burn estimado, win rate, tiers) en esa carpeta para el tracker de incentivos. Elige SMARTWORK › 009 Trackers y Utilidades › Planes DxGy.</div>
   </div>
 </div>
 
@@ -891,6 +896,16 @@ const CART_STORAGE_KEY = 'dxgy_calc_magellan_cart_v1';
 const HISTORY_STORAGE_KEY = 'dxgy_calc_magellan_history_v1';
 const TARGET_GROUPS_STORAGE_KEY = 'dxgy_calc_target_groups_v1';
 const TARGET_GROUP_COMBOS_STORAGE_KEY = 'dxgy_calc_target_group_combos_v1';
+// Every downloaded cart is also saved as a plan CSV in a local folder Juan picks once
+// (SMARTWORK/009 Trackers y Utilidades/Planes DxGy). The Weekly Incentives Tracker automation reads
+// that folder to compare planned vs real burn. Batches not yet written wait in localStorage.
+const PLAN_PENDING_KEY = 'dxgy_calc_plan_pending_v1';
+const PLAN_DB_NAME = 'dxgy_calc_plan';
+const PLAN_COLUMNS = [
+  'plan_id', 'batch_id', 'downloaded_at', 'city', 'city_id', 'incentive_type', 'event_type',
+  'reward_start', 'reward_end', 'event_period', 'target_group', 'remark', 'cohorts',
+  'title', 'currency', 'forecast_burn', 'win_rate', 'incrementality', 'tiers_json', 'event_rules',
+];
 
 // City for the Magellan cart is never independently picked — it always mirrors the city
 // detected from the uploaded trips file, so a cart item can't accidentally target the wrong city.
@@ -1396,6 +1411,147 @@ function downloadMagellanTemplate(items, fileStem) {
   XLSX.writeFile(wb, `${fileStem}_${stamp}.xlsx`);
 }
 
+// ---------- Plan file: copy of each downloaded cart for the incentives tracker ----------
+function planItem(item, batchId, downloadedAt, i) {
+  const snap = item.snapshot || {};
+  const { start, end } = parseRewardPeriod(item.rewardPeriod);
+  return {
+    plan_id: `${batchId}_${i + 1}`,
+    batch_id: batchId,
+    downloaded_at: downloadedAt,
+    city: item.city,
+    city_id: item.cityId,
+    incentive_type: MAGELLAN_TYPE_LABEL[item.incentiveType] || item.incentiveType,
+    event_type: item.eventType,
+    reward_start: start,
+    reward_end: end,
+    event_period: item.eventPeriod,
+    target_group: item.targetGroup,
+    remark: item.remark || '',
+    cohorts: (snap.cohorts || []).join('|'),
+    title: item.title || '',
+    currency: snap.currency || '',
+    forecast_burn: snap.forecastBurn ?? '',
+    win_rate: snap.winRate ?? '',
+    incrementality: snap.incrementality ?? '',
+    tiers_json: JSON.stringify(snap.tiers || []),
+    event_rules: item.eventRules,
+  };
+}
+
+function planCsv(items) {
+  const cell = v => {
+    const s = v === undefined || v === null ? '' : String(v);
+    return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const rows = [PLAN_COLUMNS, ...items.map(it => PLAN_COLUMNS.map(c => it[c]))];
+  // BOM so Excel opens accents correctly.
+  return '﻿' + rows.map(r => r.map(cell).join(',')).join('\r\n');
+}
+
+function loadPendingPlans() {
+  try {
+    const p = JSON.parse(localStorage.getItem(PLAN_PENDING_KEY));
+    return Array.isArray(p) ? p : [];
+  } catch (e) { return []; }
+}
+
+function savePendingPlans(list) {
+  try { localStorage.setItem(PLAN_PENDING_KEY, JSON.stringify(list)); return true; } catch (e) { return false; }
+}
+
+// The folder handle can't go in localStorage, so it lives in IndexedDB.
+function planDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(PLAN_DB_NAME, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore('kv');
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function planDbGet(key) {
+  const db = await planDb();
+  return new Promise((resolve, reject) => {
+    const r = db.transaction('kv').objectStore('kv').get(key);
+    r.onsuccess = () => resolve(r.result || null);
+    r.onerror = () => reject(r.error);
+  });
+}
+
+async function planDbSet(key, value) {
+  const db = await planDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('kv', 'readwrite');
+    tx.objectStore('kv').put(value, key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+const planFolderSupported = typeof window.showDirectoryPicker === 'function';
+
+async function choosePlanFolder() {
+  const dir = await window.showDirectoryPicker({ id: 'dxgy-plan', mode: 'readwrite', startIn: 'documents' });
+  await planDbSet('folder', dir);
+  return dir;
+}
+
+// Asking for permission needs the user's click, so this must run from a click handler.
+async function planFolderWithPermission() {
+  const dir = await planDbGet('folder');
+  if (!dir) return null;
+  const opts = { mode: 'readwrite' };
+  if (await dir.queryPermission(opts) === 'granted') return dir;
+  return (await dir.requestPermission(opts)) === 'granted' ? dir : null;
+}
+
+async function writePlanFile(dir, batch) {
+  const fh = await dir.getFileHandle(`plan_${batch.batch_id}.csv`, { create: true });
+  const w = await fh.createWritable();
+  await w.write(planCsv(batch.items));
+  await w.close();
+}
+
+function queuePlan(items) {
+  const downloadedAt = new Date().toISOString();
+  const batchId = downloadedAt.replace(/[-:.TZ]/g, '').slice(0, 14) + '_' + Math.random().toString(36).slice(2, 6);
+  const pending = loadPendingPlans();
+  pending.push({ batch_id: batchId, items: items.map((it, i) => planItem(it, batchId, downloadedAt, i)) });
+  return { pending, stored: savePendingPlans(pending) };
+}
+
+// Writes every pending batch to the folder. Without a folder, nothing is lost: batches wait
+// until one is chosen.
+async function flushPendingPlans() {
+  const pending = loadPendingPlans();
+  if (!pending.length) return { written: 0, left: 0, reason: null };
+  if (!planFolderSupported) return { written: 0, left: pending.length, reason: 'unsupported' };
+  let dir;
+  try { dir = await planFolderWithPermission(); } catch (e) { dir = null; }
+  if (!dir) return { written: 0, left: pending.length, reason: 'no-folder' };
+  const left = [];
+  for (const batch of pending) {
+    try { await writePlanFile(dir, batch); } catch (e) { left.push(batch); }
+  }
+  savePendingPlans(left);
+  return { written: pending.length - left.length, left: left.length, reason: left.length ? 'write-error' : null, folder: dir.name };
+}
+
+async function refreshPlanFolderLabel() {
+  const el = document.getElementById('planFolderLabel');
+  if (!el) return;
+  const pending = loadPendingPlans().length;
+  const pend = pending ? ` · ${pending} plan${pending > 1 ? 'es' : ''} sin guardar` : '';
+  if (!planFolderSupported) {
+    el.textContent = 'Este navegador no permite guardar en una carpeta (usa Chrome o Edge)' + pend;
+    return;
+  }
+  let dir = null;
+  try { dir = await planDbGet('folder'); } catch (e) { /* ignore */ }
+  el.textContent = (dir ? `Carpeta del plan: ${dir.name}` : 'Carpeta del plan: sin elegir') + pend;
+}
+
 // ---------- History: every incentive that gets consolidated and downloaded is logged per city ----------
 let HISTORY = [];
 try {
@@ -1613,17 +1769,55 @@ document.getElementById('downloadCartBtn').addEventListener('click', () => {
     document.getElementById('cartEmptyMsg').style.display = '';
     return;
   }
-  downloadMagellanTemplate(CART, 'magellan_batch_config');
-  const logged = logCartToHistory(CART);
+  const downloaded = CART;
+  downloadMagellanTemplate(downloaded, 'magellan_batch_config');
+  const logged = logCartToHistory(downloaded);
+  const queued = queuePlan(downloaded);
 
   CART = [];
   saveCart();
   renderCart();
   document.querySelectorAll('.cohort-check').forEach(c => { if (c.checked) c.click(); });
-  document.getElementById('cartAddStatus').textContent = logged
+  const status = document.getElementById('cartAddStatus');
+  const base = logged
     ? 'Plantilla descargada, carrito vaciado y registrada en el Historial.'
     : 'Plantilla descargada y carrito vaciado, pero NO se pudo guardar en el Historial (almacenamiento del navegador lleno).';
+  status.textContent = base;
+  if (!queued.stored) {
+    status.textContent = `${base} NO se pudo guardar la copia del plan (almacenamiento del navegador lleno).`;
+    return;
+  }
+  // Still inside the click, so the browser can ask for folder permission if it expired.
+  flushPendingPlans().then(r => {
+    if (!r.left) {
+      status.textContent = `${base} Plan guardado en la carpeta ${r.folder}.`;
+    } else if (r.reason === 'no-folder') {
+      status.textContent = `${base} El plan quedó pendiente: elige la carpeta del plan en el carrito (📁) y se guarda ahí.`;
+    } else if (r.reason === 'unsupported') {
+      status.textContent = `${base} El plan quedó pendiente: este navegador no permite guardar en una carpeta (usa Chrome o Edge).`;
+    } else {
+      status.textContent = `${base} No se pudo escribir el plan en la carpeta; queda pendiente y se reintenta en la próxima descarga.`;
+    }
+    refreshPlanFolderLabel();
+  });
 });
+
+document.getElementById('choosePlanFolderBtn').addEventListener('click', async () => {
+  const label = document.getElementById('planFolderLabel');
+  if (!planFolderSupported) { refreshPlanFolderLabel(); return; }
+  try {
+    await choosePlanFolder();
+  } catch (e) {
+    if (e && e.name === 'AbortError') return; // closed the picker
+    label.textContent = 'No se pudo usar esa carpeta: ' + (e && e.message ? e.message : e);
+    return;
+  }
+  const r = await flushPendingPlans();
+  await refreshPlanFolderLabel();
+  if (r.written) label.textContent += ` · ${r.written} plan${r.written > 1 ? 'es' : ''} pendiente${r.written > 1 ? 's' : ''} guardado${r.written > 1 ? 's' : ''}`;
+});
+
+refreshPlanFolderLabel();
 
 // ---------- Target groups per cohort (per city) ----------
 // TARGET_GROUPS: { [cityId]: { [cohortName]: dtacId } } for single cohorts.
