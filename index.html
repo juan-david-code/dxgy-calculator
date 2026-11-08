@@ -235,6 +235,14 @@
       </div>
     </div>
 
+    <div class="row-inline" id="dataFolderRow" style="margin-bottom:6px; flex-wrap:wrap; gap:8px;">
+      <label>Carpeta de datos</label>
+      <button type="button" class="switch-btn" id="dataFolderBtn">Elegir carpeta</button>
+      <select id="dataFolderCity" disabled><option value="">Ciudad...</option></select>
+      <button type="button" class="switch-btn" id="dataFolderLoadBtn" disabled>Cargar baseline</button>
+    </div>
+    <div id="dataFolderStatus" class="meta-line">Elige la carpeta calculator-data (una subcarpeta por ciudad). Carga trips y cohort de esa ciudad de una vez. La carga manual de abajo sigue disponible.</div>
+
     <div class="cols2">
       <div>
         <div class="row-inline"><label>Trips por hora</label>
@@ -2689,8 +2697,9 @@ document.getElementById('clearAllDatesBtn').addEventListener('click', () => {
 });
 
 // ---------- File loading: trips ----------
-document.getElementById('tripsInput').addEventListener('change', async (e) => {
-  const files = [...e.target.files];
+document.getElementById('tripsInput').addEventListener('change', (e) => loadTripsFiles([...e.target.files]));
+
+async function loadTripsFiles(files) {
   if (!files.length) return;
   document.getElementById('tripsStatus').textContent = 'Leyendo archivo(s)...';
   try {
@@ -2746,11 +2755,12 @@ document.getElementById('tripsInput').addEventListener('change', async (e) => {
     document.getElementById('tripsStatus').innerHTML = `<span class="error">Error: ${err.message}</span>`;
   }
   refreshCalcButton();
-});
+}
 
 // ---------- File loading: cohort ----------
-document.getElementById('cohortInput').addEventListener('change', async (e) => {
-  const file = e.target.files[0];
+document.getElementById('cohortInput').addEventListener('change', (e) => loadCohortFile(e.target.files[0]));
+
+async function loadCohortFile(file) {
   if (!file) return;
   document.getElementById('cohortStatus').textContent = 'Leyendo archivo...';
   try {
@@ -2777,7 +2787,95 @@ document.getElementById('cohortInput').addEventListener('change', async (e) => {
   }
   refreshCalcButton();
   refreshOptCohortCheckboxes();
+}
+
+// ---------- Data folder: calculator-data/<City>/ with manifest.json ----------
+// One subfolder per city, so a city's trips and cohort snapshot never mix with another's.
+const DATA_FOLDER_KEY = 'dataFolder';
+const dataStatus = (html) => { document.getElementById('dataFolderStatus').innerHTML = html; };
+
+async function dataFolderWithPermission() {
+  const dir = await planDbGet(DATA_FOLDER_KEY);
+  if (!dir) return null;
+  const opts = { mode: 'read' };
+  if (await dir.queryPermission(opts) === 'granted') return dir;
+  return (await dir.requestPermission(opts)) === 'granted' ? dir : null;
+}
+
+async function listDataCities(dir) {
+  const cities = [];
+  for await (const [name, h] of dir.entries()) if (h.kind === 'directory') cities.push(name);
+  return cities.sort();
+}
+
+async function fillDataCities(dir) {
+  const cities = await listDataCities(dir);
+  const sel = document.getElementById('dataFolderCity');
+  const prev = localStorage.getItem('dataFolderCity');
+  sel.innerHTML = '<option value="">Ciudad...</option>' + cities.map(c => `<option value="${escHtml(c)}">${escHtml(c)}</option>`).join('');
+  if (prev && cities.includes(prev)) sel.value = prev;
+  sel.disabled = !cities.length;
+  document.getElementById('dataFolderLoadBtn').disabled = !sel.value;
+  return cities;
+}
+
+document.getElementById('dataFolderBtn').addEventListener('click', async () => {
+  if (typeof window.showDirectoryPicker !== 'function') { dataStatus('<span class="error">Este navegador no permite elegir carpetas. Usa Chrome o Edge.</span>'); return; }
+  try {
+    const dir = await window.showDirectoryPicker({ id: 'dxgy-data', mode: 'read', startIn: 'documents' });
+    await planDbSet(DATA_FOLDER_KEY, dir);
+    const cities = await fillDataCities(dir);
+    dataStatus(cities.length ? `Carpeta <b>${escHtml(dir.name)}</b> | ciudades: ${cities.map(escHtml).join(', ')}. Elige la ciudad y pulsa Cargar baseline.`
+      : `<span class="error">La carpeta ${escHtml(dir.name)} no tiene subcarpetas de ciudad.</span>`);
+  } catch (err) { if (err.name !== 'AbortError') dataStatus(`<span class="error">Error: ${escHtml(err.message)}</span>`); }
 });
+
+document.getElementById('dataFolderCity').addEventListener('change', (e) => {
+  localStorage.setItem('dataFolderCity', e.target.value);
+  document.getElementById('dataFolderLoadBtn').disabled = !e.target.value;
+});
+
+document.getElementById('dataFolderLoadBtn').addEventListener('click', async () => {
+  const city = document.getElementById('dataFolderCity').value;
+  if (!city) return;
+  try {
+    const root = await dataFolderWithPermission();
+    if (!root) { dataStatus('<span class="error">Sin acceso a la carpeta. Pulsa Elegir carpeta otra vez.</span>'); return; }
+    dataStatus('Leyendo carpeta...');
+    const cdir = await root.getDirectoryHandle(city);
+    let manifest = null;
+    try { manifest = JSON.parse(await (await (await cdir.getFileHandle('manifest.json')).getFile()).text()); } catch (e) { /* no manifest: fall back to file names */ }
+    let tripNames, cohortName;
+    if (manifest) {
+      tripNames = (manifest.trips || []).map(t => t.file);
+      cohortName = manifest.cohort_snapshot && manifest.cohort_snapshot.file;
+    } else {
+      const names = [];
+      for await (const [n, h] of cdir.entries()) if (h.kind === 'file') names.push(n);
+      tripNames = names.filter(n => /^trips_.*\.csv$/i.test(n)).sort();
+      cohortName = names.find(n => /^cohort_snapshot.*\.csv$/i.test(n));
+    }
+    if (!tripNames.length) throw new Error(`No hay archivos de trips en ${city}/`);
+    if (!cohortName) throw new Error(`No hay cohort snapshot en ${city}/`);
+    const getF = async (n) => (await cdir.getFileHandle(n)).getFile();
+    const tripFiles = [];
+    for (const n of tripNames) tripFiles.push(await getF(n));
+    await loadTripsFiles(tripFiles);
+    await loadCohortFile(await getF(cohortName));
+    const label = manifest ? `baseline ${escHtml(manifest.baseline_week || '?')} | cohort ${escHtml((manifest.cohort_snapshot || {}).snapshot_date || '?')} | generado ${escHtml(manifest.generated_at || '?')}` : 'sin manifest.json';
+    const note = manifest && manifest.baseline_note ? `<br><span class="error">${escHtml(manifest.baseline_note)}</span>` : '';
+    dataStatus(`<b>${escHtml(city)}</b> · ${label}${note}`);
+  } catch (err) { dataStatus(`<span class="error">Error: ${escHtml(err.message)}</span>`); }
+});
+
+// Remember the folder across sessions: repopulate the city list without needing a click.
+(async () => {
+  try {
+    const dir = await planDbGet(DATA_FOLDER_KEY);
+    if (dir && await dir.queryPermission({ mode: 'read' }) === 'granted') await fillDataCities(dir);
+    else if (dir) { const sel = document.getElementById('dataFolderCity'); const c = localStorage.getItem('dataFolderCity'); if (c) { sel.innerHTML = `<option value="${escHtml(c)}">${escHtml(c)}</option>`; sel.disabled = false; document.getElementById('dataFolderLoadBtn').disabled = false; } }
+  } catch (e) { /* folder memory is optional */ }
+})();
 
 // ---------- File loading: ad hoc drv_id list (target mode "list") ----------
 document.getElementById('drvListInput').addEventListener('change', async (e) => {
