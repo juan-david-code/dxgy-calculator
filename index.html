@@ -2229,7 +2229,14 @@ def run_dxgy_pipeline(trips_json, cohort_json, city, hour_offset, snapshot_ref_d
                 return amount
 
             per_drv['guarantee_amount'] = per_drv['projected_trips'].apply(guarantee_amount_for)
-            per_drv['payout'] = (per_drv['guarantee_amount'] - per_drv['total_earnings']).clip(lower=0)
+            # Earnings must match the projected trips, not the historical ones: with an
+            # incrementality factor != 1 the driver is assumed to do projected_trips, so what
+            # they'd already have earned is avg earnings per trip x projected_trips.
+            avg_earn = np.where(
+                per_drv['total_trips'] > 0, per_drv['total_earnings'] / per_drv['total_trips'], 0.0
+            )
+            projected_earnings = avg_earn * per_drv['projected_trips'].to_numpy()
+            per_drv['payout'] = (per_drv['guarantee_amount'] - projected_earnings).clip(lower=0)
 
         elif incentive_type == 'multiplier':
             # Multiplier: each tier is a STAGE and its trips are the number of trips that stage
@@ -2386,8 +2393,9 @@ def opt_prepare(trips_json, cohort_json, city, hour_offset, snapshot_ref_date,
     trips = per_drv['total_trips'].to_numpy(dtype=float)
     earn = per_drv['total_earnings'].to_numpy(dtype=float)
     _OPT['projected'] = np.floor(trips * float(incrementality_factor)).astype(np.int64)
-    _OPT['earnings'] = earn
     _OPT['avg_earnings'] = np.where(trips > 0, earn / np.where(trips > 0, trips, 1.0), 0.0)
+    # Guarantee top-up is measured against earnings of the PROJECTED trips (see run_dxgy_pipeline).
+    _OPT['earnings'] = _OPT['avg_earnings'] * _OPT['projected']
 
     total_trips_sum = float(trips.sum())
     return json.dumps({
